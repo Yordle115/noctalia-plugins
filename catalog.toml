@@ -1,0 +1,11 @@
+[[plugin]]
+id           = "yordle/music-yt"
+name         = "Music (YTM + Local)"
+version      = "0.1.0"
+author       = "yordle"
+license      = "MIT"
+icon         = "music"
+description  = "Search YouTube Music and your local library, play or queue, manage playlists — driven through Mopidy via mpc."
+deprecated   = false
+min_noctalia = "5.0.0"
+tags         = ["music", "mpd", "mopidy", "ytmusic"]
