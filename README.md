@@ -1,5 +1,5 @@
 # yordle's Noctalia plugins
-
+## **COMPLETELY AI GENERATED**
 A Noctalia v5 plugin **source repo**. Add it as a source in Noctalia and install
 plugins from it.
 
