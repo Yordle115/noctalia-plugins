@@ -38,6 +38,7 @@ local state = {
   nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false },
   position   = 0,
   duration   = 0,
+  starting   = false,  -- true while mpv is launching (socket not up yet) — guards update() race
   busy       = false,
   status     = "",
 }
@@ -75,6 +76,7 @@ end
 
 -- Launch mpv on a URL. Replaces any current playback (kills old mpv via socket quit).
 local function playUrl(url, title, uploader)
+  noctalia.log("playUrl called: " .. tostring(url))
   if not noctalia.commandExists("mpv") then
     state.status = "mpv not found on PATH"
     render()
@@ -86,6 +88,7 @@ local function playUrl(url, title, uploader)
     return
   end
   state.status = "Loading…"
+  state.starting = true
   state.nowPlaying = { title = title or url, uploader = uploader or "", url = url, playing = true, paused = false }
   render()
 
@@ -103,8 +106,9 @@ local function playUrl(url, title, uploader)
 
   noctalia.runAsync(quit .. "sleep 0.2; rm -f " .. sq(SOCKET) .. "; " .. mpvCmd, function()
     state.status = "Playing"
-    -- give mpv a moment to create the socket + start, then refresh
-    noctalia.runAsync("sleep 1", function()
+    -- give mpv a moment to create the socket + start, then clear the guard
+    noctalia.runAsync("sleep 1.5", function()
+      state.starting = false
       refreshNowPlaying()
     end)
   end)
@@ -147,7 +151,12 @@ end
 function refreshNowPlaying()
   socketExists(function(exists)
     if not exists then
-      -- no socket = mpv not running; if we thought we were playing, advance queue
+      -- socket gone. If mpv is still launching, don't touch the queue — just wait.
+      if state.starting then
+        render()
+        return
+      end
+      -- genuinely not running; if we thought we were playing, advance queue
       if state.nowPlaying.playing then
         playNext()
       else
@@ -448,12 +457,23 @@ end
 
 function onOpen(context)
   state.status = ""
-  refreshNowPlaying()
+  -- Render immediately and return — do NOT await async chains here or the
+  -- host times out onOpen. Now-playing refresh happens in update() below.
   if context and noctalia.string.trim(context) ~= "" then
+    -- kick off a search (async; render happens in its callback)
     doSearch(context)
   else
     render()
   end
+  -- fire a one-shot refresh without blocking onOpen's return
+  noctalia.runAsync("true", function() refreshNowPlaying() end)
+end
+
+-- Panels receive update() on the update interval; use it to poll mpv state
+-- for the now-playing header without ever blocking onOpen.
+function update()
+  noctalia.setUpdateInterval(2000)
+  refreshNowPlaying()
 end
 
 function onClose() panel.close() end
@@ -487,34 +507,193 @@ function onQueueClear()
   render()
 end
 
--- Per-row handlers: fixed pool of literal-named globals (host resolves by name)
-local POOL = 80
-for i = 1, POOL do
-  _G["onResPlay" .. i] = function()
-    local r = state.results[i]
-    if r then
-      -- play now: clear queue context, play this, set as a 1-item context
-      table.insert(state.queue, { title = r.title, url = r.url, uploader = r.uploader, duration = r.duration })
-      playQueueIndex(#state.queue)
-    end
-  end
-  _G["onResQueue" .. i] = function()
-    local r = state.results[i]
-    if r then enqueue({ title = r.title, url = r.url, uploader = r.uploader, duration = r.duration }) end
-  end
-  _G["onQPlay" .. i] = function() playQueueIndex(i) end
-  _G["onQDel" .. i] = function()
-    if state.queue[i] then
-      table.remove(state.queue, i)
-      if i == state.queueIdx then
-        state.queueIdx = 0
-      elseif i < state.queueIdx then
-        state.queueIdx = state.queueIdx - 1
-      end
-      render()
-    end
+-- ---------------------------------------------------------------------------
+-- Per-row handlers. Noctalia requires onClick to name a GLOBAL function, and
+-- the sandbox makes _G read-only (so no dynamic _G[...] assignment). We instead
+-- declare a fixed pool of real named globals (legal at parse time), each
+-- delegating to a dispatcher that reads the row by index.
+-- ---------------------------------------------------------------------------
+local function rowPlay(i)
+  local r = state.results[i]
+  if r then
+    table.insert(state.queue, { title = r.title, url = r.url, uploader = r.uploader, duration = r.duration })
+    playQueueIndex(#state.queue)
   end
 end
+local function rowQueue(i)
+  local r = state.results[i]
+  if r then enqueue({ title = r.title, url = r.url, uploader = r.uploader, duration = r.duration }) end
+end
+local function qPlay(i) playQueueIndex(i) end
+local function qDel(i)
+  if state.queue[i] then
+    table.remove(state.queue, i)
+    if i == state.queueIdx then state.queueIdx = 0
+    elseif i < state.queueIdx then state.queueIdx = state.queueIdx - 1 end
+    render()
+  end
+end
+
+function onResPlay1() rowPlay(1) end
+function onResQueue1() rowQueue(1) end
+function onQPlay1() qPlay(1) end
+function onQDel1() qDel(1) end
+function onResPlay2() rowPlay(2) end
+function onResQueue2() rowQueue(2) end
+function onQPlay2() qPlay(2) end
+function onQDel2() qDel(2) end
+function onResPlay3() rowPlay(3) end
+function onResQueue3() rowQueue(3) end
+function onQPlay3() qPlay(3) end
+function onQDel3() qDel(3) end
+function onResPlay4() rowPlay(4) end
+function onResQueue4() rowQueue(4) end
+function onQPlay4() qPlay(4) end
+function onQDel4() qDel(4) end
+function onResPlay5() rowPlay(5) end
+function onResQueue5() rowQueue(5) end
+function onQPlay5() qPlay(5) end
+function onQDel5() qDel(5) end
+function onResPlay6() rowPlay(6) end
+function onResQueue6() rowQueue(6) end
+function onQPlay6() qPlay(6) end
+function onQDel6() qDel(6) end
+function onResPlay7() rowPlay(7) end
+function onResQueue7() rowQueue(7) end
+function onQPlay7() qPlay(7) end
+function onQDel7() qDel(7) end
+function onResPlay8() rowPlay(8) end
+function onResQueue8() rowQueue(8) end
+function onQPlay8() qPlay(8) end
+function onQDel8() qDel(8) end
+function onResPlay9() rowPlay(9) end
+function onResQueue9() rowQueue(9) end
+function onQPlay9() qPlay(9) end
+function onQDel9() qDel(9) end
+function onResPlay10() rowPlay(10) end
+function onResQueue10() rowQueue(10) end
+function onQPlay10() qPlay(10) end
+function onQDel10() qDel(10) end
+function onResPlay11() rowPlay(11) end
+function onResQueue11() rowQueue(11) end
+function onQPlay11() qPlay(11) end
+function onQDel11() qDel(11) end
+function onResPlay12() rowPlay(12) end
+function onResQueue12() rowQueue(12) end
+function onQPlay12() qPlay(12) end
+function onQDel12() qDel(12) end
+function onResPlay13() rowPlay(13) end
+function onResQueue13() rowQueue(13) end
+function onQPlay13() qPlay(13) end
+function onQDel13() qDel(13) end
+function onResPlay14() rowPlay(14) end
+function onResQueue14() rowQueue(14) end
+function onQPlay14() qPlay(14) end
+function onQDel14() qDel(14) end
+function onResPlay15() rowPlay(15) end
+function onResQueue15() rowQueue(15) end
+function onQPlay15() qPlay(15) end
+function onQDel15() qDel(15) end
+function onResPlay16() rowPlay(16) end
+function onResQueue16() rowQueue(16) end
+function onQPlay16() qPlay(16) end
+function onQDel16() qDel(16) end
+function onResPlay17() rowPlay(17) end
+function onResQueue17() rowQueue(17) end
+function onQPlay17() qPlay(17) end
+function onQDel17() qDel(17) end
+function onResPlay18() rowPlay(18) end
+function onResQueue18() rowQueue(18) end
+function onQPlay18() qPlay(18) end
+function onQDel18() qDel(18) end
+function onResPlay19() rowPlay(19) end
+function onResQueue19() rowQueue(19) end
+function onQPlay19() qPlay(19) end
+function onQDel19() qDel(19) end
+function onResPlay20() rowPlay(20) end
+function onResQueue20() rowQueue(20) end
+function onQPlay20() qPlay(20) end
+function onQDel20() qDel(20) end
+function onResPlay21() rowPlay(21) end
+function onResQueue21() rowQueue(21) end
+function onQPlay21() qPlay(21) end
+function onQDel21() qDel(21) end
+function onResPlay22() rowPlay(22) end
+function onResQueue22() rowQueue(22) end
+function onQPlay22() qPlay(22) end
+function onQDel22() qDel(22) end
+function onResPlay23() rowPlay(23) end
+function onResQueue23() rowQueue(23) end
+function onQPlay23() qPlay(23) end
+function onQDel23() qDel(23) end
+function onResPlay24() rowPlay(24) end
+function onResQueue24() rowQueue(24) end
+function onQPlay24() qPlay(24) end
+function onQDel24() qDel(24) end
+function onResPlay25() rowPlay(25) end
+function onResQueue25() rowQueue(25) end
+function onQPlay25() qPlay(25) end
+function onQDel25() qDel(25) end
+function onResPlay26() rowPlay(26) end
+function onResQueue26() rowQueue(26) end
+function onQPlay26() qPlay(26) end
+function onQDel26() qDel(26) end
+function onResPlay27() rowPlay(27) end
+function onResQueue27() rowQueue(27) end
+function onQPlay27() qPlay(27) end
+function onQDel27() qDel(27) end
+function onResPlay28() rowPlay(28) end
+function onResQueue28() rowQueue(28) end
+function onQPlay28() qPlay(28) end
+function onQDel28() qDel(28) end
+function onResPlay29() rowPlay(29) end
+function onResQueue29() rowQueue(29) end
+function onQPlay29() qPlay(29) end
+function onQDel29() qDel(29) end
+function onResPlay30() rowPlay(30) end
+function onResQueue30() rowQueue(30) end
+function onQPlay30() qPlay(30) end
+function onQDel30() qDel(30) end
+function onResPlay31() rowPlay(31) end
+function onResQueue31() rowQueue(31) end
+function onQPlay31() qPlay(31) end
+function onQDel31() qDel(31) end
+function onResPlay32() rowPlay(32) end
+function onResQueue32() rowQueue(32) end
+function onQPlay32() qPlay(32) end
+function onQDel32() qDel(32) end
+function onResPlay33() rowPlay(33) end
+function onResQueue33() rowQueue(33) end
+function onQPlay33() qPlay(33) end
+function onQDel33() qDel(33) end
+function onResPlay34() rowPlay(34) end
+function onResQueue34() rowQueue(34) end
+function onQPlay34() qPlay(34) end
+function onQDel34() qDel(34) end
+function onResPlay35() rowPlay(35) end
+function onResQueue35() rowQueue(35) end
+function onQPlay35() qPlay(35) end
+function onQDel35() qDel(35) end
+function onResPlay36() rowPlay(36) end
+function onResQueue36() rowQueue(36) end
+function onQPlay36() qPlay(36) end
+function onQDel36() qDel(36) end
+function onResPlay37() rowPlay(37) end
+function onResQueue37() rowQueue(37) end
+function onQPlay37() qPlay(37) end
+function onQDel37() qDel(37) end
+function onResPlay38() rowPlay(38) end
+function onResQueue38() rowQueue(38) end
+function onQPlay38() qPlay(38) end
+function onQDel38() qDel(38) end
+function onResPlay39() rowPlay(39) end
+function onResQueue39() rowQueue(39) end
+function onQPlay39() qPlay(39) end
+function onQDel39() qDel(39) end
+function onResPlay40() rowPlay(40) end
+function onResQueue40() rowQueue(40) end
+function onQPlay40() qPlay(40) end
+function onQDel40() qDel(40) end
 
 -- ---------------------------------------------------------------------------
 -- Watch for requests published by the launcher entry (/music-yt). Runs at the
