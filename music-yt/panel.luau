@@ -47,6 +47,7 @@ local state = {
   artPath    = nil,   -- local downloaded album-art file for now-playing
   starting   = false,
   shuffle    = false,  -- when on, playNext picks a random unplayed queue item
+  repeatQueue = false, -- when on, queue loops back to start after the last track
   busy       = false,
   status     = "",
   loaded     = false,  -- have we loaded persisted data yet
@@ -206,9 +207,16 @@ local function enqueue(track)
   end
 end
 
+-- forward ref so playNext (defined earlier) can trigger a reshuffle on loop-back
+local _shuffleQueue
+
 local function playNext()
   if state.queueIdx > 0 and state.queueIdx < #state.queue then
     playQueueIndex(state.queueIdx + 1)
+  elseif state.repeatQueue and #state.queue > 0 then
+    -- loop back to the start; reshuffle first if shuffle is on
+    if state.shuffle and _shuffleQueue then _shuffleQueue() end
+    playQueueIndex(1)
   else
     state.nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false }
     state.queueIdx = 0
@@ -263,6 +271,7 @@ local function shuffleQueue()
     state.queue[i], state.queue[j] = state.queue[j], state.queue[i]
   end
 end
+_shuffleQueue = shuffleQueue  -- fulfill the forward ref used by playNext
 
 local function toggleShuffle()
   state.shuffle = not state.shuffle
@@ -482,6 +491,7 @@ local function nowPlayingBar()
     ui.button({ glyph = "rewind-forward-10", variant = "ghost", onClick = "onSeekFwd" }),
     ui.button({ glyph = "player-stop", variant = "ghost", onClick = "onStop" }),
     ui.button({ glyph = "arrows-shuffle", variant = state.shuffle and "primary" or "ghost", onClick = "onShuffle" }),
+    ui.button({ glyph = "repeat", variant = state.repeatQueue and "primary" or "ghost", onClick = "onRepeat" }),
   }))
 
   return ui.row({ gap = 12, align = "center" }, children)
@@ -721,6 +731,7 @@ function onStop() stopPlayback() end
 function onSeekBack() seekRelative(-10) end
 function onSeekFwd() seekRelative(10) end
 function onShuffle() toggleShuffle() end
+function onRepeat() state.repeatQueue = not state.repeatQueue; state.status = state.repeatQueue and "Repeat on" or "Repeat off"; render() end
 function onNowFav() if state.nowPlaying.url ~= "" then toggleFav(state.nowPlaying) end end
 
 -- tabs
