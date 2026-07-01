@@ -1,11 +1,11 @@
 id           = "yordle/music-yt"
 name         = "Music (YouTube + Local)"
-version      = "0.2.7"
+version      = "0.3.0"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "music"
-description  = "Search YouTube and your local library, play or queue, with transport controls. Streams via yt-dlp + mpv — no Mopidy, no accounts."
+description  = "Search YouTube + local, play/queue, favourites, save + load playlists (local and YouTube URL), transport controls. Streams via yt-dlp + mpv — no Mopidy, no accounts."
 tags         = ["music", "youtube", "yt-dlp", "mpv"]
 
 # ---------------------------------------------------------------------------
