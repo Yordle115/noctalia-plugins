@@ -400,7 +400,7 @@ local function resultsList()
       table.insert(children, ui.separator({ spacing = 4 }))
     end
   end
-  return ui.scroll({ gap = 2, flexGrow = 1 }, children)
+  return ui.column({ gap = 2 }, children)
 end
 
 local function queueRow(item, idx)
@@ -432,23 +432,33 @@ local function queueView()
       ui.label({ text = #state.queue .. " in queue", fontSize = 11, color = "on_surface_variant" }),
       ui.button({ text = "Clear", glyph = "trash", variant = "ghost", onClick = "onQueueClear" }),
     }),
-    ui.scroll({ gap = 2, flexGrow = 1 }, children),
+    ui.column({ gap = 2 }, children),
   })
 end
 
 function render()
-  panel.render(ui.column({ gap = 12, padding = 14 }, {
+  -- Structure mirrors the official wallhaven panel (a working search-input panel):
+  -- a flex-stretch root column, fixed header section, then a SINGLE ui.scroll
+  -- body. Multiple stacked scroll regions appear to conflict with input focus.
+  local body
+  if state.busy or #state.results > 0 or state.query ~= "" then
+    body = resultsList()   -- showing search results
+  else
+    body = queueView()     -- no active search: show the queue
+  end
+
+  panel.render(ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, {
     ui.row({ align = "center", justify = "space_between" }, {
       ui.label({ text = "Music", fontSize = 16, fontWeight = "bold", color = "primary", flexGrow = 1 }),
       ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
     }),
     nowPlayingHeader(),
     ui.separator({ spacing = 2 }),
-    searchBox(),
-    resultsList(),
-    ui.separator({ spacing = 2 }),
-    queueView(),
+    ui.row({ gap = 8, align = "center" }, {
+      searchBox(),
+    }),
     (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
+    ui.scroll({ flexGrow = 1, gap = 4 }, { body }),
   }))
 end
 
