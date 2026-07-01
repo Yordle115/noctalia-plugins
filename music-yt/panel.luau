@@ -46,6 +46,7 @@ local state = {
   duration   = 0,
   artPath    = nil,   -- local downloaded album-art file for now-playing
   starting   = false,
+  shuffle    = false,  -- when on, playNext picks a random unplayed queue item
   busy       = false,
   status     = "",
   loaded     = false,  -- have we loaded persisted data yet
@@ -243,6 +244,31 @@ end
 local function togglePause()
   if state.nowPlaying.paused then mpvSet("pause", "false") else mpvSet("pause", "true") end
   noctalia.runAsync("sleep 0.15", function() refreshNowPlaying() end)
+end
+
+-- relative seek within the current track (seconds; negative = back)
+local function seekRelative(delta)
+  if not state.nowPlaying.playing then return end
+  mpvSend('{"command":["seek",' .. tostring(delta) .. ',"relative"]}', nil)
+  noctalia.runAsync("sleep 0.15", function() refreshNowPlaying() end)
+end
+
+-- Fisher-Yates shuffle of the queue, keeping the currently-playing track where
+-- it is (shuffle only the items after the current one).
+local function shuffleQueue()
+  if #state.queue < 2 then return end
+  local startI = (state.queueIdx > 0) and (state.queueIdx + 1) or 1
+  for i = #state.queue, startI + 1, -1 do
+    local j = math.random(startI, i)
+    state.queue[i], state.queue[j] = state.queue[j], state.queue[i]
+  end
+end
+
+local function toggleShuffle()
+  state.shuffle = not state.shuffle
+  if state.shuffle then shuffleQueue() end
+  state.status = state.shuffle and "Shuffle on" or "Shuffle off"
+  render()
 end
 
 local function stopPlayback()
@@ -449,10 +475,13 @@ local function nowPlayingBar()
     }))
   end
   table.insert(children, ui.row({ gap = 4, align = "center" }, {
+    ui.button({ glyph = "rewind-backward-10", variant = "ghost", onClick = "onSeekBack" }),
     ui.button({ glyph = "player-skip-back", variant = "ghost", onClick = "onPrev" }),
     ui.button({ glyph = playGlyph, variant = "primary", onClick = "onPlayPause" }),
     ui.button({ glyph = "player-skip-forward", variant = "ghost", onClick = "onNext" }),
+    ui.button({ glyph = "rewind-forward-10", variant = "ghost", onClick = "onSeekFwd" }),
     ui.button({ glyph = "player-stop", variant = "ghost", onClick = "onStop" }),
+    ui.button({ glyph = "arrows-shuffle", variant = state.shuffle and "primary" or "ghost", onClick = "onShuffle" }),
   }))
 
   return ui.row({ gap = 12, align = "center" }, children)
@@ -689,6 +718,9 @@ end
 function onPrev() if state.queueIdx > 1 then playQueueIndex(state.queueIdx - 1) end end
 function onNext() if state.queueIdx > 0 and state.queueIdx < #state.queue then playQueueIndex(state.queueIdx + 1) end end
 function onStop() stopPlayback() end
+function onSeekBack() seekRelative(-10) end
+function onSeekFwd() seekRelative(10) end
+function onShuffle() toggleShuffle() end
 function onNowFav() if state.nowPlaying.url ~= "" then toggleFav(state.nowPlaying) end end
 
 -- tabs
