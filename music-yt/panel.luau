@@ -577,17 +577,16 @@ local function bodyView()
   return queueView()
 end
 
--- vertical tab strip (right side)
-local function tabStrip()
+-- horizontal tab bar (sits atop the right panel)
+local function tabBar()
   local function tabBtn(id, label, glyph)
     return ui.button({
       text = label, glyph = glyph,
       variant = state.tab == id and "primary" or "ghost",
-      onClick = "onTab_" .. id,
-      width = 130,
+      onClick = "onTab_" .. id, flexGrow = 1,
     })
   end
-  return ui.column({ gap = 8, align = "stretch" }, {
+  return ui.row({ gap = 6 }, {
     tabBtn(TAB_QUEUE, "Queue", "list"),
     tabBtn(TAB_FAVS, "Favourites", "heart"),
     tabBtn(TAB_PL, "Playlists", "playlist"),
@@ -595,38 +594,35 @@ local function tabStrip()
 end
 
 function render()
-  -- Body: search results take over when searching, else the active tab content.
-  local body
-  if state.busy or #state.results > 0 then
-    body = ui.column({ gap = 6 }, {
-      ui.row({ align = "center", justify = "space_between" }, {
-        ui.label({ text = "Results", fontSize = 12, fontWeight = "bold", color = "on_surface_variant", flexGrow = 1 }),
-        ui.button({ text = "Clear", glyph = "x", variant = "ghost", onClick = "onClearSearch" }),
-      }),
-      resultsSection(),
-    })
-  else
-    body = bodyView()
-  end
+  -- LEFT PANEL: search box + results (always visible on the left)
+  local leftPanel = ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, {
+    ui.label({ text = "Search", fontSize = 12, fontWeight = "bold", color = "on_surface_variant" }),
+    ui.row({ gap = 8, align = "center" }, { searchBox() }),
+    ui.scroll({ flexGrow = 1, gap = 4 }, { resultsSection() }),
+  })
 
-  -- Left column: header, now-playing, search, status, then the scrolling body.
-  local leftColumn = ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, {
+  -- RIGHT PANEL: Queue / Favourites / Playlists tabs + their content
+  local rightPanel = ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, {
+    tabBar(),
+    ui.scroll({ flexGrow = 1, gap = 4 }, { bodyView() }),
+  })
+
+  panel.render(ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, {
+    -- top bar: title + close
     ui.row({ align = "center", justify = "space_between" }, {
       ui.label({ text = "Music", fontSize = 16, fontWeight = "bold", color = "primary", flexGrow = 1 }),
       ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
     }),
+    -- now-playing spans full width
     nowPlayingHeader(),
-    ui.separator({ spacing = 2 }),
-    ui.row({ gap = 8, align = "center" }, { searchBox() }),
     (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
-    ui.scroll({ flexGrow = 1, gap = 4 }, { body }),
-  })
-
-  -- Top-level: left content grows, right tab strip is fixed-width.
-  panel.render(ui.row({ flexGrow = 1, gap = 14, align = "stretch" }, {
-    leftColumn,
-    ui.separator({ orientation = "vertical", spacing = 2 }),
-    tabStrip(),
+    ui.separator({ spacing = 2 }),
+    -- the two panels side by side
+    ui.row({ flexGrow = 1, gap = 14, align = "stretch" }, {
+      leftPanel,
+      ui.separator({ orientation = "vertical", spacing = 2 }),
+      rightPanel,
+    }),
   }))
 end
 
