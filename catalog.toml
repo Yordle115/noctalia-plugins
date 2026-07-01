@@ -1,7 +1,7 @@
 [[plugin]]
 id           = "yordle/music-yt"
 name         = "Music (YouTube + Local)"
-version      = "0.3.0"
+version      = "0.3.1"
 author       = "yordle"
 license      = "MIT"
 icon         = "music"

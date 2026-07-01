@@ -484,22 +484,6 @@ local function resultsSection()
   return ui.column({ gap = 2 }, children)
 end
 
--- ---- tabs ----
-local function tabBar()
-  local function tabBtn(id, label, glyph)
-    return ui.button({
-      text = label, glyph = glyph,
-      variant = state.tab == id and "primary" or "ghost",
-      onClick = "onTab_" .. id, flexGrow = 1,
-    })
-  end
-  return ui.row({ gap = 6 }, {
-    tabBtn(TAB_QUEUE, "Queue", "list"),
-    tabBtn(TAB_FAVS, "Favourites", "heart"),
-    tabBtn(TAB_PL, "Playlists", "playlist"),
-  })
-end
-
 -- ---- queue view ----
 local function queueRow(item, idx)
   local isCurrent = (idx == state.queueIdx)
@@ -593,11 +577,28 @@ local function bodyView()
   return queueView()
 end
 
+-- vertical tab strip (right side)
+local function tabStrip()
+  local function tabBtn(id, label, glyph)
+    return ui.button({
+      text = label, glyph = glyph,
+      variant = state.tab == id and "primary" or "ghost",
+      onClick = "onTab_" .. id,
+      width = 130,
+    })
+  end
+  return ui.column({ gap = 8, align = "stretch" }, {
+    tabBtn(TAB_QUEUE, "Queue", "list"),
+    tabBtn(TAB_FAVS, "Favourites", "heart"),
+    tabBtn(TAB_PL, "Playlists", "playlist"),
+  })
+end
+
 function render()
-  -- If a search is active, results replace the tab body; else show tabs+body.
-  local mid
+  -- Body: search results take over when searching, else the active tab content.
+  local body
   if state.busy or #state.results > 0 then
-    mid = ui.column({ gap = 6 }, {
+    body = ui.column({ gap = 6 }, {
       ui.row({ align = "center", justify = "space_between" }, {
         ui.label({ text = "Results", fontSize = 12, fontWeight = "bold", color = "on_surface_variant", flexGrow = 1 }),
         ui.button({ text = "Clear", glyph = "x", variant = "ghost", onClick = "onClearSearch" }),
@@ -605,13 +606,11 @@ function render()
       resultsSection(),
     })
   else
-    mid = ui.column({ gap = 8 }, {
-      tabBar(),
-      bodyView(),
-    })
+    body = bodyView()
   end
 
-  panel.render(ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, {
+  -- Left column: header, now-playing, search, status, then the scrolling body.
+  local leftColumn = ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, {
     ui.row({ align = "center", justify = "space_between" }, {
       ui.label({ text = "Music", fontSize = 16, fontWeight = "bold", color = "primary", flexGrow = 1 }),
       ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
@@ -620,7 +619,14 @@ function render()
     ui.separator({ spacing = 2 }),
     ui.row({ gap = 8, align = "center" }, { searchBox() }),
     (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
-    ui.scroll({ flexGrow = 1, gap = 4 }, { mid }),
+    ui.scroll({ flexGrow = 1, gap = 4 }, { body }),
+  })
+
+  -- Top-level: left content grows, right tab strip is fixed-width.
+  panel.render(ui.row({ flexGrow = 1, gap = 14, align = "stretch" }, {
+    leftColumn,
+    ui.separator({ orientation = "vertical", spacing = 2 }),
+    tabStrip(),
   }))
 end
 

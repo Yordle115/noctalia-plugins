@@ -1,6 +1,6 @@
 id           = "yordle/music-yt"
 name         = "Music (YouTube + Local)"
-version      = "0.3.0"
+version      = "0.3.1"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
@@ -47,8 +47,8 @@ default = "~/Music"
 [[panel]]
 id        = "panel"
 entry     = "panel.luau"
-width     = 480
-height    = 620
+width     = 720
+height    = 760
 placement = "floating"
 position  = "center"
 open_near_click = true
