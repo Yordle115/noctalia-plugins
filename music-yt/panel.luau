@@ -457,23 +457,25 @@ end
 
 function onOpen(context)
   state.status = ""
-  -- Render immediately and return — do NOT await async chains here or the
-  -- host times out onOpen. Now-playing refresh happens in update() below.
+  -- DIAGNOSTIC: second-ticks disabled to test whether the update path causes
+  -- the panel to close. If the panel now stays open, the tick/refresh is the cause.
+  -- panel.setWantsSecondTicks(true)
+  noctalia.log("music-yt panel onOpen fired")
   if context and noctalia.string.trim(context) ~= "" then
-    -- kick off a search (async; render happens in its callback)
     doSearch(context)
   else
     render()
   end
-  -- fire a one-shot refresh without blocking onOpen's return
-  noctalia.runAsync("true", function() refreshNowPlaying() end)
 end
 
--- Panels receive update() on the update interval; use it to poll mpv state
--- for the now-playing header without ever blocking onOpen.
+-- Panels tick update() on second boundaries when second-ticks are enabled.
+-- We enable it once in onOpen. Only refresh now-playing when something is
+-- actually playing/starting — polling while idle is pointless and re-rendering
+-- on the idle path can disrupt the visible search results.
 function update()
-  noctalia.setUpdateInterval(2000)
-  refreshNowPlaying()
+  if state.nowPlaying.playing or state.starting then
+    refreshNowPlaying()
+  end
 end
 
 function onClose() panel.close() end
