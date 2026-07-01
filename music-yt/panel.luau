@@ -350,10 +350,11 @@ end
 
 local function searchBox()
   return ui.input({
-    key = "search-input",
-    value = "",
+    key = "search",
     placeholder = "Search YouTube…",
+    flexGrow = 1,
     fontSize = 14,
+    onChange = "onSearchChange",
     onSubmit = "onSearchSubmit",
   })
 end
@@ -457,10 +458,8 @@ end
 
 function onOpen(context)
   state.status = ""
-  -- DIAGNOSTIC: second-ticks disabled to test whether the update path causes
-  -- the panel to close. If the panel now stays open, the tick/refresh is the cause.
-  -- panel.setWantsSecondTicks(true)
-  noctalia.log("music-yt panel onOpen fired")
+  -- enable second-boundary ticks so update() refreshes now-playing while playing
+  panel.setWantsSecondTicks(true)
   if context and noctalia.string.trim(context) ~= "" then
     doSearch(context)
   else
@@ -481,6 +480,7 @@ end
 function onClose() panel.close() end
 
 function onSearchSubmit(text) doSearch(text) end
+function onSearchChange(text) state.query = text end
 
 function onPlayPause()
   if not state.nowPlaying.playing then
