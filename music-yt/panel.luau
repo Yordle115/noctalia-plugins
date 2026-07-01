@@ -1,328 +1,368 @@
 -- =============================================================================
---  panel.luau — Music (YTM + Local) GUI panel
---  Now-playing header + search box + Queue / Playlists tabs.
---  Drives Mopidy through `mpc` against its MPD frontend.
+--  panel.luau — Music (YouTube + Local) GUI panel
+--  Native yt-dlp + mpv backend. No Mopidy, no MPD.
+--    search   : yt-dlp --flat-playlist --dump-single-json ytsearch15:<query>
+--    play     : mpv --no-video --ytdl-format=bestaudio/best --input-ipc-server=<sock>
+--    control  : JSON commands piped to the mpv IPC socket via socat
+--  All JSON parsed in Luau; only external deps are yt-dlp, mpv, socat.
 -- =============================================================================
 
--- ---------- config (read once at load, re-read on open) ----------
+local SOCKET = "/tmp/noctalia-music-mpv.sock"
+
+-- ---------- config ----------
 local function cfg()
   return {
-    host  = noctalia.getConfig("mpc_host") or "127.0.0.1",
-    port  = tostring(noctalia.getConfig("mpc_port") or 6600),
-    limit = noctalia.getConfig("search_limit") or 8,
-    cache = noctalia.expandPath(noctalia.getConfig("art_cache") or "~/.cache/noctalia-music-yt"),
+    results   = noctalia.getConfig("search_results") or 15,
+    localDir  = noctalia.expandPath(noctalia.getConfig("local_music_dir") or ""),
+    localOn   = noctalia.getConfig("search_local") == true,
+    ytClient  = noctalia.getConfig("yt_player_client") or "android",
   }
 end
 
--- ---------- mpc command builder ----------
--- Returns a shell string: `mpc -h HOST -p PORT <args>`
-local function mpc(args)
-  local c = cfg()
-  return string.format("mpc -h %s -p %s %s", c.host, c.port, args)
-end
-
--- shell-quote a single argument safely (single quotes, escape embedded ')
+-- ---------- shell quoting ----------
 local function sq(s)
   s = tostring(s or "")
   return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
 -- ---------- view state ----------
-local TAB_QUEUE     = "queue"
-local TAB_PLAYLISTS = "playlists"
+local TAB_QUEUE = "queue"
+local TAB_LIB   = "library"   -- reserved for phase 2 (favorites); shows queue for now
 
 local state = {
   tab        = TAB_QUEUE,
   query      = "",
-  results    = {},   -- { {uri, title, artist, source}, ... }
-  queue      = {},   -- { {pos, title, artist, playing}, ... }
-  playlists  = {},   -- { name, ... }
-  nowPlaying = { title = "", artist = "", state = "stop", file = "" },
-  artPath    = nil,  -- local cached thumbnail path for now-playing
+  results    = {},   -- { {id,title,url,uploader,duration,source}, ... }
+  queue      = {},   -- { {title,url,uploader,duration}, ... }  (Luau-managed)
+  queueIdx   = 0,    -- index of currently-playing queue item (0 = none)
+  nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false },
+  position   = 0,
+  duration   = 0,
   busy       = false,
-  status     = "",   -- transient status line
+  status     = "",
 }
 
--- ---------- parsing helpers ----------
--- mpc search output with our format: URI \t TITLE \t ARTIST
--- We request a custom format so parsing is deterministic.
-local FMT = "%file%\\t%title%\\t%artist%"
-
-local function sourceOf(uri)
-  if uri:match("^ytmusic:") or uri:match("^yt:") then return "YTM" end
-  if uri:match("^local:") or uri:match("^file:") then return "Local" end
-  -- mopidy ytmusic uris can look like 'ytmusic:track:...'
-  if uri:match("ytmusic") then return "YTM" end
-  return "Local"
+-- ---------- mpv IPC (via socat) ----------
+-- Send a JSON command to mpv's socket, invoke cb with the raw reply string.
+local function mpvSend(jsonCmd, cb)
+  local cmd = "printf '%s\\n' " .. sq(jsonCmd)
+            .. " | socat -t 1 - UNIX-CONNECT:" .. sq(SOCKET) .. " 2>/dev/null | head -1"
+  noctalia.runAsync(cmd, function(res)
+    if cb then cb((res.stdout or ""):gsub("\n$", "")) end
+  end)
 end
 
-local function parseRows(stdout)
-  local rows = {}
-  for line in (stdout or ""):gmatch("[^\n]+") do
-    local uri, title, artist = line:match("^(.-)\t(.-)\t(.*)$")
-    if uri and uri ~= "" then
-      if title == "" then title = uri:gsub("^.*/", "") end
-      table.insert(rows, {
-        uri = uri,
-        title = title,
-        artist = artist or "",
-        source = sourceOf(uri),
-      })
-    end
+-- Get a single mpv property (returns parsed .data via cb)
+local function mpvGet(prop, cb)
+  mpvSend('{"command":["get_property","' .. prop .. '"]}', function(reply)
+    if reply == "" then cb(nil); return end
+    local ok, parsed = pcall(function() return noctalia.json.decode(reply) end)
+    if ok and parsed then cb(parsed.data) else cb(nil) end
+  end)
+end
+
+-- Set an mpv property (fire-and-forget)
+local function mpvSet(prop, value)
+  mpvSend('{"command":["set_property","' .. prop .. '",' .. value .. ']}', nil)
+end
+
+-- ---------- playback ----------
+local function socketExists(cb)
+  noctalia.runAsync("test -S " .. sq(SOCKET) .. " && echo yes || echo no", function(res)
+    cb((res.stdout or ""):match("yes") ~= nil)
+  end)
+end
+
+-- Launch mpv on a URL. Replaces any current playback (kills old mpv via socket quit).
+local function playUrl(url, title, uploader)
+  if not noctalia.commandExists("mpv") then
+    state.status = "mpv not found on PATH"
+    render()
+    return
   end
-  return rows
+  if not noctalia.commandExists("socat") then
+    state.status = "socat not found — add it to media.nix"
+    render()
+    return
+  end
+  state.status = "Loading…"
+  state.nowPlaying = { title = title or url, uploader = uploader or "", url = url, playing = true, paused = false }
+  render()
+
+  local c = cfg()
+  -- Tell any existing mpv to quit, then start a fresh one on the same socket.
+  local quit = "printf '%s\\n' '{\"command\":[\"quit\"]}' | socat -t 1 - UNIX-CONNECT:" .. sq(SOCKET) .. " 2>/dev/null; "
+  local ytdlRaw = "--ytdl-raw-options=extractor-args=youtube:player_client=" .. c.ytClient
+  local mpvCmd = "setsid mpv --no-video --force-window=no --audio-display=no"
+    .. " --ytdl-format=bestaudio/best --demuxer-max-bytes=256K"
+    .. " --idle=once --input-ipc-server=" .. sq(SOCKET)
+    .. " " .. sq(ytdlRaw)
+    .. " --title=" .. sq("Noctalia Music")
+    .. " " .. sq(url)
+    .. " >/dev/null 2>&1 &"
+
+  noctalia.runAsync(quit .. "sleep 0.2; rm -f " .. sq(SOCKET) .. "; " .. mpvCmd, function()
+    state.status = "Playing"
+    -- give mpv a moment to create the socket + start, then refresh
+    noctalia.runAsync("sleep 1", function()
+      refreshNowPlaying()
+    end)
+  end)
 end
 
--- ---------- album art ----------
--- mpc can dump embedded/remote art as binary. We can't capture binary safely
--- through text stdout, so we have mpc write it straight to a cache file via a
--- shell redirect, then point ui.image at that path. `readpicture` covers
--- embedded art; `albumart` covers separate art files — try readpicture first,
--- fall back to albumart.
-local function refreshArt(file)
-  if not file or file == "" then state.artPath = nil; render(); return end
-  local c = cfg()
-  -- ensure cache dir
-  noctalia.runAsync("mkdir -p " .. sq(c.cache), function()
-    -- sweep old stamped art (keep dir from growing unbounded)
-    noctalia.runAsync("find " .. sq(c.cache) .. " -name 'now_*.art' -mmin +5 -delete 2>/dev/null")
-    local dest = c.cache .. "/now.art"
-    -- readpicture writes raw bytes to stdout; redirect to file. If empty,
-    -- try albumart. We pick a stable filename so ui.image can load it.
-    local cmd = mpc("readpicture " .. sq(file)) .. " > " .. sq(dest)
-              .. " 2>/dev/null; "
-              .. "if [ ! -s " .. sq(dest) .. " ]; then "
-              .. mpc("albumart " .. sq(file)) .. " > " .. sq(dest) .. " 2>/dev/null; fi; "
-              -- detect type and rename to an extension ui.image accepts
-              .. "if [ -s " .. sq(dest) .. " ]; then "
-              .. "echo ok; else echo none; fi"
-    noctalia.runAsync(cmd, function(res)
-      if (res.stdout or ""):match("ok") then
-        -- ui.image loads by path regardless of extension content; use as-is.
-        -- Add a cache-busting copy so the diff sees a changed path when song
-        -- changes (same filename would be treated as unchanged).
-        local stamp = c.cache .. "/now_" .. tostring(os.time()) .. ".art"
-        noctalia.runAsync("cp -f " .. sq(dest) .. " " .. sq(stamp), function()
-          state.artPath = stamp
-          render()
-        end)
+-- Play the queue item at index i
+local function playQueueIndex(i)
+  local item = state.queue[i]
+  if not item then return end
+  state.queueIdx = i
+  playUrl(item.url, item.title, item.uploader)
+end
+
+-- Enqueue a track (append). If nothing playing, start it.
+local function enqueue(track)
+  table.insert(state.queue, track)
+  state.status = "Added to queue"
+  if not state.nowPlaying.playing then
+    playQueueIndex(#state.queue)
+  else
+    render()
+  end
+end
+
+-- Advance to next queue item (called when current ends)
+local function playNext()
+  if state.queueIdx > 0 and state.queueIdx < #state.queue then
+    playQueueIndex(state.queueIdx + 1)
+  else
+    -- queue exhausted
+    state.nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false }
+    state.queueIdx = 0
+    state.position = 0
+    state.duration = 0
+    render()
+  end
+end
+
+-- ---------- now-playing refresh (polls mpv over IPC) ----------
+function refreshNowPlaying()
+  socketExists(function(exists)
+    if not exists then
+      -- no socket = mpv not running; if we thought we were playing, advance queue
+      if state.nowPlaying.playing then
+        playNext()
       else
-        state.artPath = nil
         render()
       end
+      return
+    end
+    -- socket exists; gather pause, playback-time, duration, media-title
+    mpvGet("pause", function(paused)
+      state.nowPlaying.paused = (paused == true)
+      state.nowPlaying.playing = true
+      mpvGet("playback-time", function(pt)
+        state.position = tonumber(pt) or 0
+        mpvGet("duration", function(dur)
+          state.duration = tonumber(dur) or 0
+          -- if eof reached (position at/near duration and not paused), advance
+          mpvGet("eof-reached", function(eof)
+            if eof == true then
+              playNext()
+            else
+              render()
+            end
+          end)
+        end)
+      end)
     end)
   end)
 end
 
--- ---------- now-playing refresh ----------
-local function refreshNowPlaying()
-  -- `mpc -f` current with status; we parse two calls cheaply via one status fetch
-  noctalia.runAsync(mpc("-f " .. sq("%title%\\t%artist%\\t%file%") .. " current"), function(res)
-    local line = (res.stdout or ""):gsub("\n$", "")
-    local title, artist, file = line:match("^(.-)\t(.-)\t(.*)$")
-    state.nowPlaying.title  = title or ""
-    state.nowPlaying.artist = artist or ""
-    state.nowPlaying.file   = file or ""
-    refreshArt(file)
-    -- playback state
-    noctalia.runAsync(mpc("status"), function(r2)
-      local s = r2.stdout or ""
-      if s:match("%[playing%]") then state.nowPlaying.state = "play"
-      elseif s:match("%[paused%]") then state.nowPlaying.state = "pause"
-      else state.nowPlaying.state = "stop" end
-      render()
-    end)
-  end)
+-- ---------- transport ----------
+local function togglePause()
+  if state.nowPlaying.paused then
+    mpvSet("pause", "false")
+  else
+    mpvSet("pause", "true")
+  end
+  noctalia.runAsync("sleep 0.15", function() refreshNowPlaying() end)
 end
 
--- ---------- queue refresh ----------
-local function refreshQueue()
-  noctalia.runAsync(mpc("-f " .. sq("%position%\\t%title%\\t%artist%") .. " playlist"), function(res)
-    local q = {}
-    -- find current position to mark the playing row
-    for line in (res.stdout or ""):gmatch("[^\n]+") do
-      local pos, title, artist = line:match("^(%d+)\t(.-)\t(.*)$")
-      if pos then
-        table.insert(q, { pos = tonumber(pos), title = title, artist = artist or "" })
-      end
-    end
-    state.queue = q
-    if state.tab == TAB_QUEUE then render() end
-  end)
+local function stopPlayback()
+  mpvSend('{"command":["quit"]}', nil)
+  state.nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false }
+  state.queueIdx = 0
+  state.position = 0
+  state.duration = 0
+  noctalia.runAsync("sleep 0.2; rm -f " .. sq(SOCKET), function() render() end)
 end
 
--- ---------- playlists refresh ----------
-local function refreshPlaylists()
-  noctalia.runAsync(mpc("lsplaylists"), function(res)
-    local pls = {}
-    for line in (res.stdout or ""):gmatch("[^\n]+") do
-      local name = noctalia.string.trim(line)
-      if name ~= "" then table.insert(pls, name) end
-    end
-    state.playlists = pls
-    if state.tab == TAB_PLAYLISTS then render() end
-  end)
+local function seekTo(seconds)
+  mpvSend('{"command":["seek",' .. tostring(seconds) .. ',"absolute+exact"]}', nil)
+  noctalia.runAsync("sleep 0.15", function() refreshNowPlaying() end)
 end
 
 -- ---------- search ----------
+local function sourceOf(url)
+  if url:match("youtube%.com") or url:match("youtu%.be") then return "YT" end
+  if url:match("^/") or url:match("^file:") then return "Local" end
+  return "YT"
+end
+
+local function parseSearchJson(raw)
+  local out = {}
+  if not raw or raw == "" then return out end
+  local ok, parsed = pcall(function() return noctalia.json.decode(raw) end)
+  if not ok or not parsed then return out end
+  local entries = parsed.entries or {}
+  for _, e in ipairs(entries) do
+    local id = e.id or ""
+    if id ~= "" then
+      local url = e.url
+      if not url or url == "" then
+        url = "https://www.youtube.com/watch?v=" .. id
+      end
+      table.insert(out, {
+        id = id,
+        title = e.title or "Untitled",
+        url = url,
+        uploader = e.channel or e.uploader or "",
+        duration = tonumber(e.duration) or 0,
+        source = "YT",
+      })
+    end
+  end
+  return out
+end
+
 local function doSearch(q)
+  q = q and noctalia.string.trim(q) or ""
   state.query = q
-  if q == nil or noctalia.string.trim(q) == "" then
+  if q == "" then
+    state.results = {}
+    render()
+    return
+  end
+  if not noctalia.commandExists("yt-dlp") then
+    state.status = "yt-dlp not found on PATH"
     state.results = {}
     render()
     return
   end
   state.busy = true
   render()
-  -- search across title + artist; mopidy federates YTM + local backends.
-  -- `mpc search any <q>` then format. We cap with head via a second pipe.
+
   local c = cfg()
-  local cmd = mpc("-f " .. sq(FMT) .. " search any " .. sq(q))
-            .. " | head -n " .. tostring(c.limit * 2)
-  noctalia.runAsync(cmd, function(res)
-    state.busy = false
-    state.results = parseRows(res.stdout)
-    render()
-  end)
-end
+  local ytCmd = "yt-dlp --ignore-config --flat-playlist --dump-single-json"
+    .. " --extractor-args " .. sq("youtube:player_client=" .. c.ytClient)
+    .. " " .. sq("ytsearch" .. tostring(c.results) .. ":" .. q)
+    .. " 2>/dev/null"
 
--- ---------- actions ----------
--- play a uri NOW: clear, add, play  (replace queue & play)
-local function playNow(uri)
-  state.status = "Playing…"
-  render()
-  local seq = mpc("clear") .. " && " .. mpc("add " .. sq(uri)) .. " && " .. mpc("play")
-  noctalia.runAsync(seq, function()
-    refreshNowPlaying(); refreshQueue()
-  end)
-end
+  noctalia.runAsync(ytCmd, function(res)
+    local ytResults = parseSearchJson(res.stdout)
 
--- queue a uri at the end (don't interrupt)
-local function queueUri(uri)
-  state.status = "Added to queue"
-  render()
-  noctalia.runAsync(mpc("add " .. sq(uri)), function()
-    refreshQueue()
-    -- if nothing is playing, start it so the add is audible eventually? No —
-    -- "add to queue" should not interrupt. Leave playback as-is.
-  end)
-end
-
--- transport
-local function transport(cmd)
-  noctalia.runAsync(mpc(cmd), function() refreshNowPlaying(); refreshQueue() end)
-end
-
--- play a specific queue position
-local function playPos(pos)
-  noctalia.runAsync(mpc("play " .. tostring(pos)), function()
-    refreshNowPlaying(); refreshQueue()
-  end)
-end
-
--- remove a queue position
-local function removePos(pos)
-  noctalia.runAsync(mpc("del " .. tostring(pos)), function() refreshQueue() end)
-end
-
--- load a playlist (append) or replace+play
-local function loadPlaylist(name, replace)
-  local seq
-  if replace then
-    seq = mpc("clear") .. " && " .. mpc("load " .. sq(name)) .. " && " .. mpc("play")
-  else
-    seq = mpc("load " .. sq(name))
-  end
-  state.status = replace and ("Playing " .. name) or ("Queued " .. name)
-  render()
-  noctalia.runAsync(seq, function() refreshNowPlaying(); refreshQueue() end)
-end
-
--- add a playlist/track from a pasted URL (ytmusic playlist or track link).
--- mopidy-ytmusic resolves ytmusic: URIs; for a raw youtube/ytm URL we hand it
--- to `mpc add` which mopidy may resolve, else we try `mpc findadd`.
-local function addFromUrl(url, replace)
-  url = noctalia.string.trim(url)
-  if url == "" then return end
-  state.status = "Resolving link…"
-  render()
-  local addcmd = mpc("add " .. sq(url))
-  local seq = replace
-    and (mpc("clear") .. " && " .. addcmd .. " && " .. mpc("play"))
-    or  addcmd
-  noctalia.runAsync(seq, function(res)
-    if (res.exitCode or 0) ~= 0 then
-      state.status = "Could not resolve link"
+    -- optional local search merged in
+    if c.localOn and c.localDir ~= "" then
+      local findCmd = "find " .. sq(c.localDir) .. " -maxdepth 4 -type f "
+        .. "\\( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.opus' -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.wav' \\) "
+        .. "2>/dev/null | grep -i -F " .. sq(q) .. " | head -n " .. tostring(c.results)
+      noctalia.runAsync(findCmd, function(lres)
+        local locals = {}
+        for line in (lres.stdout or ""):gmatch("[^\n]+") do
+          local fname = line:gsub("^.*/", ""):gsub("%.%w+$", "")
+          table.insert(locals, {
+            id = line, title = fname, url = line,
+            uploader = "Local file", duration = 0, source = "Local",
+          })
+        end
+        -- locals first, then YT
+        local merged = {}
+        for _, r in ipairs(locals) do table.insert(merged, r) end
+        for _, r in ipairs(ytResults) do table.insert(merged, r) end
+        state.results = merged
+        state.busy = false
+        render()
+      end)
     else
-      state.status = replace and "Playing link" or "Queued link"
+      state.results = ytResults
+      state.busy = false
+      render()
     end
-    refreshQueue(); refreshNowPlaying()
   end)
+end
+
+-- ---------- format helpers ----------
+local function fmtDuration(sec)
+  sec = tonumber(sec) or 0
+  if sec <= 0 then return "" end
+  local h = math.floor(sec / 3600)
+  local m = math.floor((sec % 3600) / 60)
+  local s = math.floor(sec % 60)
+  if h > 0 then
+    return string.format("%d:%02d:%02d", h, m, s)
+  end
+  return string.format("%d:%02d", m, s)
 end
 
 -- =====================================================================
 --  RENDER
 -- =====================================================================
 
-local function stateGlyph()
-  local s = state.nowPlaying.state
-  if s == "play" then return "player-pause" end
-  return "player-play"
-end
-
 local function nowPlayingHeader()
   local np = state.nowPlaying
-  local hasTrack = (np.title ~= "" or np.file ~= "")
-  local titleText = hasTrack and (np.title ~= "" and np.title or np.file) or "Nothing playing"
-  local artistText = np.artist ~= "" and np.artist or (hasTrack and "—" or "")
+  local hasTrack = np.playing and np.title ~= ""
+  local titleText = hasTrack and np.title or "Nothing playing"
+  local subText = hasTrack and (np.uploader ~= "" and np.uploader or "—") or ""
 
-  local thumb
-  if state.artPath and noctalia.fileExists(state.artPath) then
-    thumb = ui.image({ path = state.artPath, width = 64, height = 64, radius = 8, fit = "cover" })
-  else
-    thumb = ui.box({ width = 64, height = 64, radius = 8, fill = "surface_variant" })
+  local playGlyph = np.paused and "player-play" or "player-pause"
+  if not hasTrack then playGlyph = "player-play" end
+
+  local progressText = ""
+  if hasTrack and state.duration > 0 then
+    progressText = fmtDuration(state.position) .. " / " .. fmtDuration(state.duration)
   end
 
-  return ui.row({ gap = 12, align = "center" }, {
-    thumb,
-    ui.column({ gap = 2, flexGrow = 1 }, {
-      ui.label({ text = titleText, fontSize = 15, fontWeight = "bold",
-                 color = "on_surface", maxLines = 1 }),
-      ui.label({ text = artistText, fontSize = 12, color = "on_surface_variant", maxLines = 1 }),
-    }),
-    ui.row({ gap = 4, align = "center" }, {
-      ui.button({ glyph = "player-skip-back", variant = "ghost", onClick = "onPrev" }),
-      ui.button({ glyph = stateGlyph(), variant = "primary", onClick = "onPlayPause" }),
-      ui.button({ glyph = "player-skip-forward", variant = "ghost", onClick = "onNext" }),
+  return ui.column({ gap = 6 }, {
+    ui.row({ gap = 12, align = "center" }, {
+      ui.box({ width = 56, height = 56, radius = 8, fill = "surface_variant" }),
+      ui.column({ gap = 2, flexGrow = 1 }, {
+        ui.label({ text = titleText, fontSize = 15, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
+        ui.label({ text = subText, fontSize = 12, color = "on_surface_variant", maxLines = 1 }),
+        (progressText ~= "" and ui.label({ text = progressText, fontSize = 10, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
+      }),
+      ui.row({ gap = 4, align = "center" }, {
+        ui.button({ glyph = "player-skip-back", variant = "ghost", onClick = "onPrev" }),
+        ui.button({ glyph = playGlyph, variant = "primary", onClick = "onPlayPause" }),
+        ui.button({ glyph = "player-skip-forward", variant = "ghost", onClick = "onNext" }),
+        ui.button({ glyph = "player-stop", variant = "ghost", onClick = "onStop" }),
+      }),
     }),
   })
 end
 
 local function searchBox()
-  return ui.column({ gap = 6 }, {
-    ui.input({
-      key = "search-input",
-      value = "",
-      placeholder = "Search YouTube Music + local…",
-      fontSize = 14,
-      onSubmit = "onSearchSubmit",
-      onChange = "onSearchChange",
-    }),
+  return ui.input({
+    key = "search-input",
+    value = "",
+    placeholder = "Search YouTube…",
+    fontSize = 14,
+    onSubmit = "onSearchSubmit",
   })
 end
 
 local function sourceBadge(src)
-  local color = src == "YTM" and "primary" or "secondary"
+  local color = src == "YT" and "primary" or "secondary"
   return ui.label({ text = src, fontSize = 10, fontWeight = "bold", color = color })
 end
 
 local function resultRow(r, idx)
+  local dur = fmtDuration(r.duration)
   return ui.row({ gap = 8, align = "center", key = "res-" .. idx }, {
     ui.column({ gap = 1, flexGrow = 1 }, {
       ui.label({ text = r.title, fontSize = 13, color = "on_surface", maxLines = 1 }),
       ui.row({ gap = 6, align = "center" }, {
         sourceBadge(r.source),
-        ui.label({ text = r.artist, fontSize = 11, color = "on_surface_variant", maxLines = 1, flexGrow = 1 }),
+        ui.label({ text = r.uploader, fontSize = 11, color = "on_surface_variant", maxLines = 1, flexGrow = 1 }),
+        (dur ~= "" and ui.label({ text = dur, fontSize = 10, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
       }),
     }),
     ui.button({ glyph = "player-play", variant = "outline", onClick = "onResPlay" .. idx }),
@@ -341,7 +381,7 @@ local function resultsList()
     if state.query ~= "" then
       return ui.label({ text = "No results.", fontSize = 13, color = "on_surface_variant", paddingV = 8 })
     end
-    return ui.spacer({})
+    return ui.spacer({ height = 0 })
   end
   local children = {}
   for i, r in ipairs(state.results) do
@@ -353,27 +393,16 @@ local function resultsList()
   return ui.scroll({ gap = 2, flexGrow = 1 }, children)
 end
 
-local function tabBar()
-  return ui.row({ gap = 6 }, {
-    ui.button({
-      text = "Queue", glyph = "list",
-      variant = state.tab == TAB_QUEUE and "primary" or "ghost",
-      onClick = "onTabQueue", flexGrow = 1,
-    }),
-    ui.button({
-      text = "Playlists", glyph = "playlist",
-      variant = state.tab == TAB_PLAYLISTS and "primary" or "ghost",
-      onClick = "onTabPlaylists", flexGrow = 1,
-    }),
-  })
-end
-
 local function queueRow(item, idx)
+  local isCurrent = (idx == state.queueIdx)
   return ui.row({ gap = 8, align = "center", key = "q-" .. idx }, {
-    ui.label({ text = tostring(item.pos + 1), fontSize = 11, color = "on_surface_variant", width = 22 }),
+    (isCurrent
+      and ui.glyph({ name = "volume", size = 14, color = "primary" })
+      or ui.label({ text = tostring(idx), fontSize = 11, color = "on_surface_variant", width = 20 })),
     ui.column({ gap = 1, flexGrow = 1 }, {
-      ui.label({ text = item.title ~= "" and item.title or "(unknown)", fontSize = 13, color = "on_surface", maxLines = 1 }),
-      ui.label({ text = item.artist, fontSize = 11, color = "on_surface_variant", maxLines = 1 }),
+      ui.label({ text = item.title, fontSize = 13,
+                 color = isCurrent and "primary" or "on_surface", maxLines = 1 }),
+      ui.label({ text = item.uploader, fontSize = 11, color = "on_surface_variant", maxLines = 1 }),
     }),
     ui.button({ glyph = "player-play", variant = "ghost", onClick = "onQPlay" .. idx }),
     ui.button({ glyph = "x", variant = "ghost", onClick = "onQDel" .. idx }),
@@ -382,56 +411,23 @@ end
 
 local function queueView()
   if #state.queue == 0 then
-    return ui.label({ text = "Queue is empty.", fontSize = 13, color = "on_surface_variant", paddingV = 8 })
+    return ui.label({ text = "Queue is empty. Search and add tracks.", fontSize = 13, color = "on_surface_variant", paddingV = 8 })
   end
   local children = {}
   for i, item in ipairs(state.queue) do
     table.insert(children, queueRow(item, i))
   end
-  return ui.scroll({ gap = 2, flexGrow = 1 }, children)
-end
-
-local function playlistRow(name, idx)
-  return ui.row({ gap = 8, align = "center", key = "pl-" .. idx }, {
-    ui.glyph({ name = "playlist", size = 16, color = "on_surface_variant" }),
-    ui.label({ text = name, fontSize = 13, color = "on_surface", flexGrow = 1, maxLines = 1 }),
-    ui.button({ glyph = "player-play", variant = "outline", onClick = "onPlPlay" .. idx }),
-    ui.button({ glyph = "plus", variant = "ghost", onClick = "onPlQueue" .. idx }),
-  })
-end
-
-local function playlistsView()
-  local children = {}
-  -- paste-a-link row
-  table.insert(children, ui.row({ gap = 6, align = "center", key = "pl-url" }, {
-    ui.input({
-      key = "url-input",
-      value = "",
-      placeholder = "Paste YTM / playlist link…",
-      fontSize = 13,
-      onSubmit = "onAddUrl",
-      flexGrow = 1,
+  return ui.column({ gap = 4 }, {
+    ui.row({ align = "center", justify = "space_between" }, {
+      ui.label({ text = #state.queue .. " in queue", fontSize = 11, color = "on_surface_variant" }),
+      ui.button({ text = "Clear", glyph = "trash", variant = "ghost", onClick = "onQueueClear" }),
     }),
-  }))
-  table.insert(children, ui.separator({ spacing = 6 }))
-  if #state.playlists == 0 then
-    table.insert(children, ui.label({ text = "No saved playlists.", fontSize = 13, color = "on_surface_variant", paddingV = 6 }))
-  else
-    for i, name in ipairs(state.playlists) do
-      table.insert(children, playlistRow(name, i))
-    end
-  end
-  return ui.scroll({ gap = 4, flexGrow = 1 }, children)
-end
-
-local function bodyView()
-  if state.tab == TAB_PLAYLISTS then return playlistsView() end
-  return queueView()
+    ui.scroll({ gap = 2, flexGrow = 1 }, children),
+  })
 end
 
 function render()
   panel.render(ui.column({ gap = 12, padding = 14 }, {
-    -- header row with title + close
     ui.row({ align = "center", justify = "space_between" }, {
       ui.label({ text = "Music", fontSize = 16, fontWeight = "bold", color = "primary", flexGrow = 1 }),
       ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
@@ -441,23 +437,18 @@ function render()
     searchBox(),
     resultsList(),
     ui.separator({ spacing = 2 }),
-    tabBar(),
-    bodyView(),
-    -- transient status
+    queueView(),
     (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
   }))
 end
 
 -- =====================================================================
---  CALLBACKS  (named globals — UI references them by string)
+--  CALLBACKS
 -- =====================================================================
 
 function onOpen(context)
   state.status = ""
   refreshNowPlaying()
-  refreshQueue()
-  refreshPlaylists()
-  -- if opened with a context string (e.g. from launcher), prefill search
   if context and noctalia.string.trim(context) ~= "" then
     doSearch(context)
   else
@@ -467,52 +458,79 @@ end
 
 function onClose() panel.close() end
 
--- search
 function onSearchSubmit(text) doSearch(text) end
-function onSearchChange(text)
-  -- live-ish: only fire on submit to avoid hammering; keep last text
-  state.query = text
-end
 
--- transport
 function onPlayPause()
-  if state.nowPlaying.state == "play" then transport("pause")
-  else transport("play") end
+  if not state.nowPlaying.playing then
+    -- nothing loaded: start queue from top if it exists
+    if #state.queue > 0 then playQueueIndex(1) end
+    return
+  end
+  togglePause()
 end
-function onPrev() transport("prev") end
-function onNext() transport("next") end
 
--- tabs
-function onTabQueue() state.tab = TAB_QUEUE; refreshQueue(); render() end
-function onTabPlaylists() state.tab = TAB_PLAYLISTS; refreshPlaylists(); render() end
+function onPrev()
+  if state.queueIdx > 1 then playQueueIndex(state.queueIdx - 1) end
+end
 
--- result actions use "name:idx" — Noctalia passes the whole string as the fn
--- name, so we register a dispatcher pattern via individual wrappers. Because
--- callbacks must be exact global names, we instead encode the index in the
--- name and parse it here through a metatable-free lookup shim below.
+function onNext()
+  if state.queueIdx > 0 and state.queueIdx < #state.queue then
+    playQueueIndex(state.queueIdx + 1)
+  end
+end
 
--- url
-function onAddUrl(text) addFromUrl(text, false) end
+function onStop() stopPlayback() end
+
+function onQueueClear()
+  state.queue = {}
+  state.queueIdx = 0
+  render()
+end
+
+-- Per-row handlers: fixed pool of literal-named globals (host resolves by name)
+local POOL = 80
+for i = 1, POOL do
+  _G["onResPlay" .. i] = function()
+    local r = state.results[i]
+    if r then
+      -- play now: clear queue context, play this, set as a 1-item context
+      table.insert(state.queue, { title = r.title, url = r.url, uploader = r.uploader, duration = r.duration })
+      playQueueIndex(#state.queue)
+    end
+  end
+  _G["onResQueue" .. i] = function()
+    local r = state.results[i]
+    if r then enqueue({ title = r.title, url = r.url, uploader = r.uploader, duration = r.duration }) end
+  end
+  _G["onQPlay" .. i] = function() playQueueIndex(i) end
+  _G["onQDel" .. i] = function()
+    if state.queue[i] then
+      table.remove(state.queue, i)
+      if i == state.queueIdx then
+        state.queueIdx = 0
+      elseif i < state.queueIdx then
+        state.queueIdx = state.queueIdx - 1
+      end
+      render()
+    end
+  end
+end
 
 -- ---------------------------------------------------------------------------
--- Per-row handlers. Callbacks must be *real, literally-named* globals so the
--- host resolves them directly (no metatable indexing assumptions). We generate
--- a fixed pool large enough for any result/queue/playlist list, each reading
--- the live item out of state by its index.
+-- Watch for requests published by the launcher entry (/music-yt). Runs at the
+-- top level (per Noctalia docs: register watchers here). When the launcher
+-- publishes a play/queue request, handle it with the panel's live mpv state.
 -- ---------------------------------------------------------------------------
-local POOL = 80  -- max rows we'll ever render in any one list
-
-for i = 1, POOL do
-  _G["onResPlay" .. i]  = function() local r = state.results[i];   if r then playNow(r.uri) end end
-  _G["onResQueue" .. i] = function() local r = state.results[i];   if r then queueUri(r.uri) end end
-  _G["onPlPlay" .. i]   = function() local n = state.playlists[i]; if n then loadPlaylist(n, true) end end
-  _G["onPlQueue" .. i]  = function() local n = state.playlists[i]; if n then loadPlaylist(n, false) end end
-end
-
--- Queue handlers are keyed by the *queue position*, which equals (index-1)
--- because mpc positions are what we stored in item.pos. We index the pool by
--- the 1-based render index and look up the item to get its real position.
-for i = 1, POOL do
-  _G["onQPlay" .. i] = function() local it = state.queue[i]; if it then playPos(it.pos) end end
-  _G["onQDel" .. i]  = function() local it = state.queue[i]; if it then removePos(it.pos) end end
-end
+local lastNonce = nil
+noctalia.state.watch("launcher_request", function(req)
+  if type(req) ~= "table" then return end
+  if req.nonce and req.nonce == lastNonce then return end
+  lastNonce = req.nonce
+  local track = { title = req.title or req.url, url = req.url, uploader = "", duration = 0 }
+  if req.action == "play" then
+    table.insert(state.queue, track)
+    playQueueIndex(#state.queue)
+  elseif req.action == "queue" then
+    enqueue(track)
+  end
+end)

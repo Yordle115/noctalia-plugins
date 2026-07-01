@@ -1,50 +1,48 @@
 id           = "yordle/music-yt"
-name         = "Music (YTM + Local)"
-version      = "0.1.0"
+name         = "Music (YouTube + Local)"
+version      = "0.2.0"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "music"
-description  = "Search YouTube Music and your local library, play or queue, manage playlists — driven through Mopidy via mpc."
-tags         = ["music", "mpd", "mopidy", "ytmusic"]
+description  = "Search YouTube and your local library, play or queue, with transport controls. Streams via yt-dlp + mpv — no Mopidy, no accounts."
+tags         = ["music", "youtube", "yt-dlp", "mpv"]
 
 # ---------------------------------------------------------------------------
-# Plugin-level settings (shared by all entries, edited in Settings -> Plugins)
+# Plugin-level settings (Settings -> Plugins)
 # ---------------------------------------------------------------------------
 [[setting]]
-key     = "mpc_host"
-type    = "string"
-label   = "MPD host"
-description = "Host where Mopidy's MPD frontend listens."
-default = "127.0.0.1"
-
-[[setting]]
-key     = "mpc_port"
+key     = "search_results"
 type    = "int"
-label   = "MPD port"
-description = "Port of Mopidy's MPD frontend (matches services.mopidy [mpd] port)."
-default = 6600
-min     = 1
-max     = 65535
-
-[[setting]]
-key     = "search_limit"
-type    = "int"
-label   = "Max results per source"
-description = "How many results to show from each of YTM and local."
-default = 8
+label   = "Search results"
+description = "How many YouTube results to fetch per search."
+default = 15
 min     = 3
-max     = 25
+max     = 40
 
 [[setting]]
-key     = "art_cache"
+key     = "yt_player_client"
 type    = "string"
-label   = "Album art cache dir"
-description = "Where downloaded thumbnails are cached."
-default = "~/.cache/noctalia-music-yt"
+label   = "yt-dlp player client"
+description = "YouTube extractor client (android is fast and reliable; web/tv are alternatives)."
+default = "android"
+
+[[setting]]
+key     = "search_local"
+type    = "bool"
+label   = "Also search local library"
+description = "Include results from your local music directory."
+default = false
+
+[[setting]]
+key     = "local_music_dir"
+type    = "string"
+label   = "Local music directory"
+description = "Folder to search when local search is enabled."
+default = "~/Music"
 
 # ---------------------------------------------------------------------------
-# The GUI panel — now-playing header, search box, Queue/Playlists tabs
+# The GUI panel
 # ---------------------------------------------------------------------------
 [[panel]]
 id        = "panel"
@@ -56,7 +54,7 @@ position  = "center"
 open_near_click = true
 
 # ---------------------------------------------------------------------------
-# Bar widget — click to toggle the panel, shows now-playing glyph/state
+# Bar widget
 # ---------------------------------------------------------------------------
 [[widget]]
 id    = "bar"
@@ -77,12 +75,12 @@ entry = "widget.luau"
   max     = 80
 
 # ---------------------------------------------------------------------------
-# Launcher provider — /music-yt fallback for quick search from the launcher
+# Launcher provider — /music-yt quick search
 # ---------------------------------------------------------------------------
 [[launcher_provider]]
 id          = "search"
 entry       = "search.luau"
 prefix      = "/music-yt"
 glyph       = "music"
-debounce_ms = 350
+debounce_ms = 400
 include_in_global_search = false

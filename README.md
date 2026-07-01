@@ -1,45 +1,24 @@
 # yordle's Noctalia plugins
-## **COMPLETELY AI GENERATED**
-A Noctalia v5 plugin **source repo**. Add it as a source in Noctalia and install
-plugins from it.
+
+A Noctalia v5 plugin **source repo**.
+
+> Some plugins here are AI-assisted.
 
 ## Add this source
 
 ```fish
 noctalia msg plugins source add yordle git https://github.com/Yordle115/noctalia-plugins
+noctalia msg plugins enable yordle/music-yt
 ```
 
-Then open **Settings → Plugins**, find the plugin below, and enable it.
+Then open **Settings → Plugins** to configure.
 
-> ⚠️ Noctalia's plugin API is **alpha** and subject to breaking changes.
-> These plugins target the API as documented at docs.noctalia.dev/v5/plugins.
+## Plugins
 
-## Plugins in this repo
+### Music (YouTube + Local) — `yordle/music-yt`
+GUI music panel: search YouTube (and optionally local files), play or queue,
+transport controls, now-playing header. Streams via **yt-dlp + mpv** — no
+Mopidy, no accounts.
 
-### Music (YTM + Local) — `yordle/music-yt`
-GUI music panel: search YouTube Music **and** local library, play or queue,
-manage playlists, now-playing header with thumbnail + transport. Driven through
-**Mopidy** via the `mpc` CLI.
-
-See [`music-yt/README.md`](music-yt/README.md) for the required NixOS setup
-(`mopidy-mpd` + `mpc`), wiring (bar widget, keybind, `/music-yt` launcher), and
-caveats.
-
-**Requirements:** Mopidy running with `mopidy-mpd` + `mopidy-ytmusic`, and `mpc`
-on PATH. Full details in the plugin README.
-
----
-
-## Repo layout (for contributors / future plugins)
-
-```
-catalog.toml         # indexes every plugin for listing + compat-check
-music-yt/            # subdir name = part of the id after the slash
-  plugin.toml        # manifest
-  *.luau             # entry scripts
-  translations/
-```
-
-To add another plugin: make a new subdir matching `<author>/<name>`'s `<name>`,
-put its `plugin.toml` + scripts inside, and add a `[[plugin]]` row to
-`catalog.toml`. Catalog rows require at least `id` and `name`.
+**Requires** `yt-dlp`, `mpv`, and `socat` on `PATH`. See
+[`music-yt/README.md`](music-yt/README.md) for setup, wiring, and how it works.

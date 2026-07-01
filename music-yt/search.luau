@@ -1,72 +1,60 @@
 -- =============================================================================
 --  search.luau — launcher provider (/music-yt)
---  Quick search from the launcher. Each result offers Play (activate) and a
---  "+ queue" variant row. Selecting opens nothing extra — it acts immediately.
+--  Quick YouTube search from the launcher. Each hit: a Play row and a Queue row.
+--  Play/Queue talk to the SAME mpv socket + a small state file the panel reads.
 -- =============================================================================
 
-local function cfg()
-  return {
-    host  = noctalia.getConfig("mpc_host") or "127.0.0.1",
-    port  = tostring(noctalia.getConfig("mpc_port") or 6600),
-    limit = noctalia.getConfig("search_limit") or 8,
-  }
-end
-
-local function mpc(args)
-  local c = cfg()
-  return string.format("mpc -h %s -p %s %s", c.host, c.port, args)
-end
+local SOCKET = "/tmp/noctalia-music-mpv.sock"
 
 local function sq(s)
   s = tostring(s or "")
   return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
-local FMT = "%file%\\t%title%\\t%artist%"
-
-local function sourceOf(uri)
-  if uri:match("ytmusic") or uri:match("^yt:") then return "YTM" end
-  return "Local"
+local function cfg()
+  return {
+    results  = noctalia.getConfig("search_results") or 15,
+    ytClient = noctalia.getConfig("yt_player_client") or "android",
+  }
 end
-
--- Map result id -> uri so onActivate can act. id encodes action + uri.
--- We build ids like "play\turi" and "queue\turi".
 
 function onQuery(text)
   text = noctalia.string.trim(text or "")
   if text == "" then
-    launcher.setResults("", { { id = "_hint", title = "Type to search YouTube Music + local", glyph = "music" } })
+    launcher.setResults("", { { id = "_hint", title = "Type to search YouTube", glyph = "music" } })
     return
   end
-
   launcher.setResults(text, { { id = "_loading", title = "Searching…", glyph = "loader" } })
 
   local c = cfg()
-  local cmd = mpc("-f " .. sq(FMT) .. " search any " .. sq(text))
-            .. " | head -n " .. tostring(c.limit)
+  local ytCmd = "yt-dlp --ignore-config --flat-playlist --dump-single-json"
+    .. " --extractor-args " .. sq("youtube:player_client=" .. c.ytClient)
+    .. " " .. sq("ytsearch" .. tostring(c.results) .. ":" .. text)
+    .. " 2>/dev/null"
 
-  noctalia.runAsync(cmd, function(res)
+  noctalia.runAsync(ytCmd, function(res)
     local results = {}
-    for line in (res.stdout or ""):gmatch("[^\n]+") do
-      local uri, title, artist = line:match("^(.-)\t(.-)\t(.*)$")
-      if uri and uri ~= "" then
-        if title == "" then title = uri:gsub("^.*/", "") end
-        local src = sourceOf(uri)
-        local sub = (artist ~= "" and artist or "") .. "   [" .. src .. "]"
-        -- Play row
-        table.insert(results, {
-          id = "play\t" .. uri,
-          title = title,
-          subtitle = "▶ Play   ·   " .. sub,
-          glyph = "player-play",
-        })
-        -- Queue row
-        table.insert(results, {
-          id = "queue\t" .. uri,
-          title = title,
-          subtitle = "+ Queue   ·   " .. sub,
-          glyph = "plus",
-        })
+    local ok, parsed = pcall(function() return noctalia.json.decode(res.stdout or "") end)
+    if ok and parsed and parsed.entries then
+      for _, e in ipairs(parsed.entries) do
+        local id = e.id or ""
+        if id ~= "" then
+          local url = "https://www.youtube.com/watch?v=" .. id
+          local title = e.title or "Untitled"
+          local up = e.channel or e.uploader or ""
+          table.insert(results, {
+            id = "play\t" .. url .. "\t" .. title,
+            title = title,
+            subtitle = "▶ Play   ·   " .. up,
+            glyph = "player-play",
+          })
+          table.insert(results, {
+            id = "queue\t" .. url .. "\t" .. title,
+            title = title,
+            subtitle = "+ Queue   ·   " .. up,
+            glyph = "plus",
+          })
+        end
       end
     end
     if #results == 0 then
@@ -77,18 +65,22 @@ function onQuery(text)
 end
 
 function onActivate(id)
-  if id:sub(1, 1) == "_" then return end  -- hint/loading/none rows
-  local action, uri = id:match("^(%a+)\t(.*)$")
-  if not action or not uri then return end
+  if id:sub(1, 1) == "_" then return end
+  local action, url, title = id:match("^(%a+)\t([^\t]*)\t(.*)$")
+  if not action or not url then return end
+
+  -- Publish the request to the shared plugin state channel; the panel entry
+  -- watches "launcher_request" and handles play/queue with its live mpv state.
+  noctalia.state.set("launcher_request", {
+    action = action,
+    url = url,
+    title = title,
+    nonce = tostring(noctalia.formatTime("%s")) .. "-" .. tostring(math.random(1, 99999)),
+  })
 
   if action == "play" then
-    local seq = mpc("clear") .. " && " .. mpc("add " .. sq(uri)) .. " && " .. mpc("play")
-    noctalia.runAsync(seq, function()
-      noctalia.notify("Music", "Playing")
-    end)
-  elseif action == "queue" then
-    noctalia.runAsync(mpc("add " .. sq(uri)), function()
-      noctalia.notify("Music", "Added to queue")
-    end)
+    noctalia.notify("Music", "Playing: " .. title)
+  else
+    noctalia.notify("Music", "Queued: " .. title)
   end
 end

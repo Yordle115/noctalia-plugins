@@ -1,19 +1,9 @@
 -- =============================================================================
---  widget.luau — bar widget for Music (YTM + Local)
---  Click: toggle the panel. Display: now-playing glyph + optional title.
+--  widget.luau — bar widget for Music (YouTube + Local)
+--  Click toggles the panel. Polls mpv IPC socket for now-playing state.
 -- =============================================================================
 
-local function cfg()
-  return {
-    host = noctalia.getConfig("mpc_host") or "127.0.0.1",
-    port = tostring(noctalia.getConfig("mpc_port") or 6600),
-  }
-end
-
-local function mpc(args)
-  local c = cfg()
-  return string.format("mpc -h %s -p %s %s", c.host, c.port, args)
-end
+local SOCKET = "/tmp/noctalia-music-mpv.sock"
 
 local function sq(s)
   s = tostring(s or "")
@@ -30,39 +20,49 @@ local function truncate(s, n)
   return s:sub(1, n - 1) .. "…"
 end
 
+local function mpvGet(prop, cb)
+  local cmd = "printf '%s\\n' " .. sq('{"command":["get_property","' .. prop .. '"]}')
+            .. " | socat -t 1 - UNIX-CONNECT:" .. sq(SOCKET) .. " 2>/dev/null | head -1"
+  noctalia.runAsync(cmd, function(res)
+    local reply = (res.stdout or ""):gsub("\n$", "")
+    if reply == "" then cb(nil); return end
+    local ok, parsed = pcall(function() return noctalia.json.decode(reply) end)
+    if ok and parsed then cb(parsed.data) else cb(nil) end
+  end)
+end
+
 function update()
-  noctalia.setUpdateInterval(2000)  -- poll now-playing every 2s
+  noctalia.setUpdateInterval(2000)
 
-  noctalia.runAsync(mpc("-f " .. sq("%title%\\t%artist%") .. " current"), function(res)
-    local line = (res.stdout or ""):gsub("\n$", "")
-    local title, artist = line:match("^(.-)\t(.*)$")
-
-    noctalia.runAsync(mpc("status"), function(r2)
-      local s = r2.stdout or ""
-      local playing = s:match("%[playing%]") ~= nil
-      local paused  = s:match("%[paused%]") ~= nil
-
-      if playing then
-        barWidget.setGlyph("player-play")
-        lastState = "play"
-      elseif paused then
+  noctalia.runAsync("test -S " .. sq(SOCKET) .. " && echo yes || echo no", function(res)
+    local exists = (res.stdout or ""):match("yes") ~= nil
+    if not exists then
+      barWidget.setGlyph("music")
+      barWidget.setText("")
+      barWidget.setTooltip("Music — nothing playing")
+      lastState = "stop"
+      return
+    end
+    mpvGet("pause", function(paused)
+      if paused == true then
         barWidget.setGlyph("player-pause")
         lastState = "pause"
       else
-        barWidget.setGlyph("music")
-        lastState = "stop"
+        barWidget.setGlyph("player-play")
+        lastState = "play"
       end
-
-      if showTitle and title and title ~= "" and lastState ~= "stop" then
-        local label = title
-        if artist and artist ~= "" then label = title .. " · " .. artist end
-        barWidget.setText(truncate(label, maxLen))
-        barWidget.setTooltip(label)
+      if showTitle then
+        mpvGet("media-title", function(title)
+          local t = tostring(title or "")
+          if t ~= "" and t ~= "nil" then
+            barWidget.setText(truncate(t, maxLen))
+            barWidget.setTooltip(t)
+          else
+            barWidget.setText("")
+          end
+        end)
       else
         barWidget.setText("")
-        if lastState == "stop" then
-          barWidget.setTooltip("Music — nothing playing")
-        end
       end
     end)
   end)
@@ -72,16 +72,16 @@ function onClick()
   noctalia.togglePanel("yordle/music-yt:panel")
 end
 
--- Right-click: play/pause toggle as a quick action
 function onRightClick()
-  if lastState == "play" then
-    noctalia.runAsync(mpc("pause"))
-  else
-    noctalia.runAsync(mpc("play"))
-  end
+  local toggle = (lastState == "play") and "true" or "false"
+  local cmd = "printf '%s\\n' " .. sq('{"command":["set_property","pause",' .. toggle .. ']}')
+            .. " | socat -t 1 - UNIX-CONNECT:" .. sq(SOCKET) .. " 2>/dev/null"
+  noctalia.runAsync(cmd)
 end
 
--- Middle-click: skip
 function onMiddleClick()
-  noctalia.runAsync(mpc("next"))
+  -- middle-click stops playback
+  local cmd = "printf '%s\\n' " .. sq('{"command":["quit"]}')
+            .. " | socat -t 1 - UNIX-CONNECT:" .. sq(SOCKET) .. " 2>/dev/null"
+  noctalia.runAsync(cmd)
 end
