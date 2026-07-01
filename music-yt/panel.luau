@@ -41,9 +41,10 @@ local state = {
   favourites = {},   -- { {title,url,uploader,duration} }
   playlists  = {},   -- { name = { {track}, ... }, ... }
   plNames    = {},   -- sorted list of playlist names (for stable row indexing)
-  nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false },
+  nowPlaying = { title = "", uploader = "", url = "", thumbnail = "", playing = false, paused = false },
   position   = 0,
   duration   = 0,
+  artPath    = nil,   -- local downloaded album-art file for now-playing
   starting   = false,
   busy       = false,
   status     = "",
@@ -145,7 +146,7 @@ local function socketExists(cb)
   end)
 end
 
-local function playUrl(url, title, uploader)
+local function playUrl(url, title, uploader, thumbnail)
   if not noctalia.commandExists("mpv") then
     state.status = "mpv not found on PATH"; render(); return
   end
@@ -154,8 +155,19 @@ local function playUrl(url, title, uploader)
   end
   state.status = "Loading…"
   state.starting = true
-  state.nowPlaying = { title = title or url, uploader = uploader or "", url = url, playing = true, paused = false }
+  state.artPath = nil
+  state.nowPlaying = { title = title or url, uploader = uploader or "", url = url, thumbnail = thumbnail or "", playing = true, paused = false }
   render()
+
+  -- download album art (if we have a thumbnail URL) for the now-playing display
+  if thumbnail and thumbnail ~= "" and noctalia.download then
+    local dest = DATA_DIR .. "/nowart.jpg"
+    noctalia.runAsync("mkdir -p " .. sq(DATA_DIR), function()
+      noctalia.download(thumbnail, dest, function(ok)
+        if ok then state.artPath = dest; render() end
+      end)
+    end)
+  end
 
   local c = cfg()
   local quit = "printf '%s\\n' '{\"command\":[\"quit\"]}' | socat -t 1 - UNIX-CONNECT:" .. sq(SOCKET) .. " 2>/dev/null; "
@@ -180,7 +192,7 @@ local function playQueueIndex(i)
   local item = state.queue[i]
   if not item then return end
   state.queueIdx = i
-  playUrl(item.url, item.title, item.uploader)
+  playUrl(item.url, item.title, item.uploader, item.thumbnail)
 end
 
 local function enqueue(track)
@@ -257,6 +269,7 @@ local function parseSearchJson(raw)
         id = id, title = e.title or "Untitled", url = url,
         uploader = e.channel or e.uploader or "",
         duration = tonumber(e.duration) or 0, source = "YT",
+        thumbnail = e.thumbnail or ("https://i.ytimg.com/vi/" .. id .. "/mqdefault.jpg"),
       })
     end
   end
@@ -323,7 +336,7 @@ local function loadYoutubePlaylist(url, replace)
       state.queueIdx = 0
     end
     for _, t in ipairs(tracks) do
-      table.insert(state.queue, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration })
+      table.insert(state.queue, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration, thumbnail = t.thumbnail })
     end
     state.status = "Loaded " .. #tracks .. " tracks"
     state.tab = TAB_QUEUE
@@ -344,7 +357,7 @@ local function saveQueueAsPlaylist(name)
   end
   local copy = {}
   for _, t in ipairs(state.queue) do
-    table.insert(copy, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration })
+    table.insert(copy, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration, thumbnail = t.thumbnail })
   end
   state.playlists[name] = copy
   savePlaylists()
@@ -357,7 +370,7 @@ local function loadPlaylist(name, replace)
   if not pl then return end
   if replace then state.queue = {}; state.queueIdx = 0 end
   for _, t in ipairs(pl) do
-    table.insert(state.queue, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration })
+    table.insert(state.queue, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration, thumbnail = t.thumbnail })
   end
   state.status = (replace and "Playing " or "Queued ") .. name
   state.tab = TAB_QUEUE
@@ -394,7 +407,7 @@ local function starButton(track, keyPrefix)
   })
 end
 
-local function nowPlayingHeader()
+local function nowPlayingBar()
   local np = state.nowPlaying
   local hasTrack = np.playing and np.title ~= ""
   local titleText = hasTrack and np.title or "Nothing playing"
@@ -403,34 +416,46 @@ local function nowPlayingHeader()
   if not hasTrack then playGlyph = "player-play" end
 
   local progressText = ""
+  local progressFrac = 0
   if hasTrack and state.duration > 0 then
     progressText = fmtDuration(state.position) .. " / " .. fmtDuration(state.duration)
+    progressFrac = state.position / state.duration
   end
 
-  local headerChildren = {
-    ui.box({ width = 56, height = 56, radius = 8, fill = "surface_variant" }),
-    ui.column({ gap = 2, flexGrow = 1 }, {
+  -- album art: real image if downloaded, else a music glyph in a box
+  local art
+  if state.artPath and hasTrack then
+    art = ui.image({ path = state.artPath, width = 64, height = 64, radius = 8, fit = "cover" })
+  else
+    art = ui.column({ width = 64, height = 64, align = "center", justify = "center", fill = "surface_variant", radius = 8 }, {
+      ui.glyph({ name = "music", size = 28, color = "on_surface_variant" }),
+    })
+  end
+
+  local children = {
+    art,
+    ui.column({ gap = 3, flexGrow = 1 }, {
       ui.label({ text = titleText, fontSize = 15, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
       ui.label({ text = subText, fontSize = 12, color = "on_surface_variant", maxLines = 1 }),
+      (hasTrack and ui.progress({ progress = progressFrac, fill = "primary", track = "surface_variant", radius = 3, height = 4 }) or ui.spacer({ height = 0 })),
       (progressText ~= "" and ui.label({ text = progressText, fontSize = 10, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
     }),
   }
-  -- star for the now-playing track
   if hasTrack then
-    table.insert(headerChildren, ui.button({
+    table.insert(children, ui.button({
       glyph = isFav(np.url) and "heart-filled" or "heart",
       variant = isFav(np.url) and "primary" or "ghost",
       onClick = "onNowFav",
     }))
   end
-  table.insert(headerChildren, ui.row({ gap = 4, align = "center" }, {
+  table.insert(children, ui.row({ gap = 4, align = "center" }, {
     ui.button({ glyph = "player-skip-back", variant = "ghost", onClick = "onPrev" }),
     ui.button({ glyph = playGlyph, variant = "primary", onClick = "onPlayPause" }),
     ui.button({ glyph = "player-skip-forward", variant = "ghost", onClick = "onNext" }),
     ui.button({ glyph = "player-stop", variant = "ghost", onClick = "onStop" }),
   }))
 
-  return ui.row({ gap = 12, align = "center" }, headerChildren)
+  return ui.row({ gap = 12, align = "center" }, children)
 end
 
 local function searchBox()
@@ -594,14 +619,14 @@ local function tabBar()
 end
 
 function render()
-  -- LEFT PANEL: search box + results (always visible on the left)
+  -- LEFT: search box + results
   local leftPanel = ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, {
     ui.label({ text = "Search", fontSize = 12, fontWeight = "bold", color = "on_surface_variant" }),
     ui.row({ gap = 8, align = "center" }, { searchBox() }),
     ui.scroll({ flexGrow = 1, gap = 4 }, { resultsSection() }),
   })
 
-  -- RIGHT PANEL: Queue / Favourites / Playlists tabs + their content
+  -- RIGHT: Queue / Favourites / Playlists tabs + content
   local rightPanel = ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, {
     tabBar(),
     ui.scroll({ flexGrow = 1, gap = 4 }, { bodyView() }),
@@ -613,16 +638,17 @@ function render()
       ui.label({ text = "Music", fontSize = 16, fontWeight = "bold", color = "primary", flexGrow = 1 }),
       ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
     }),
-    -- now-playing spans full width
-    nowPlayingHeader(),
-    (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
-    ui.separator({ spacing = 2 }),
-    -- the two panels side by side
+    -- MAIN AREA: split search-left / tabs-right, fills available height
     ui.row({ flexGrow = 1, gap = 14, align = "stretch" }, {
       leftPanel,
       ui.separator({ orientation = "vertical", spacing = 2 }),
       rightPanel,
     }),
+    -- status line (transient)
+    (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
+    -- NOW PLAYING bar pinned at the bottom, full width
+    ui.separator({ spacing = 2 }),
+    nowPlayingBar(),
   }))
 end
 
@@ -678,13 +704,13 @@ function onSavePlaylist(text) saveQueueAsPlaylist(text) end
 function onLoadYtPlaylist(text) loadYoutubePlaylist(text, false) end
 
 -- ---- dispatchers for per-row handlers ----
-local function resPlay(i) local r = state.results[i]; if r then table.insert(state.queue, {title=r.title,url=r.url,uploader=r.uploader,duration=r.duration}); playQueueIndex(#state.queue) end end
-local function resQueue(i) local r = state.results[i]; if r then enqueue({title=r.title,url=r.url,uploader=r.uploader,duration=r.duration}) end end
+local function resPlay(i) local r = state.results[i]; if r then table.insert(state.queue, {title=r.title,url=r.url,uploader=r.uploader,duration=r.duration,thumbnail=r.thumbnail}); playQueueIndex(#state.queue) end end
+local function resQueue(i) local r = state.results[i]; if r then enqueue({title=r.title,url=r.url,uploader=r.uploader,duration=r.duration,thumbnail=r.thumbnail}) end end
 local function resFav(i) local r = state.results[i]; if r then toggleFav(r) end end
 local function qPlay(i) playQueueIndex(i) end
 local function qDel(i) if state.queue[i] then table.remove(state.queue,i); if i==state.queueIdx then state.queueIdx=0 elseif i<state.queueIdx then state.queueIdx=state.queueIdx-1 end; render() end end
-local function favPlay(i) local t = state.favourites[i]; if t then table.insert(state.queue,{title=t.title,url=t.url,uploader=t.uploader,duration=t.duration}); playQueueIndex(#state.queue) end end
-local function favQueue(i) local t = state.favourites[i]; if t then enqueue({title=t.title,url=t.url,uploader=t.uploader,duration=t.duration}) end end
+local function favPlay(i) local t = state.favourites[i]; if t then table.insert(state.queue,{title=t.title,url=t.url,uploader=t.uploader,duration=t.duration,thumbnail=t.thumbnail}); playQueueIndex(#state.queue) end end
+local function favQueue(i) local t = state.favourites[i]; if t then enqueue({title=t.title,url=t.url,uploader=t.uploader,duration=t.duration,thumbnail=t.thumbnail}) end end
 local function favDel(i) local t = state.favourites[i]; if t then removeFav(t.url); render() end end
 local function plPlay(i) local n = state.plNames[i]; if n then loadPlaylist(n, true) end end
 local function plQueue(i) local n = state.plNames[i]; if n then loadPlaylist(n, false) end end
