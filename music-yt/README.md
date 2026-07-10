@@ -12,11 +12,13 @@ YouTube.
 Three entry points:
 - **Bar widget** — click toggles the panel; shows now-playing glyph + title.
   Right-click = play/pause, middle-click = stop.
-- **Panel** — now-playing header (title/artist + transport + progress), search
-  box, and a queue.
+- **Panel** — a single column: tabs (Search / Queue / Favourites / Playlists)
+  over one list, with a now-playing bar (album art, progress, transport,
+  shuffle/repeat, favourite) pinned at the bottom.
 - **Launcher** `/music-yt <query>` — quick YouTube search; each hit offers a
   ▶ Play row and a + Queue row. Requests hand off to the panel via Noctalia's
-  shared state channel.
+  shared state channel (the panel picks them up while open, or within a minute
+  of being opened).
 
 > ⚠️ Noctalia's plugin API is **alpha** and subject to breaking changes. Built
 > against the v5 plugin docs as of July 2026.
@@ -111,16 +113,18 @@ Socket lives at `/tmp/noctalia-music-mpv.sock`.
 
 ---
 
-## Scope (v0.2.0)
+## Scope (v0.4.0)
 
-This version nails the **core loop**: YouTube search → play/queue → transport →
-now-playing. Deliberately **not** included yet (were in v4, deferred to keep v1
-focused): a saved-favorites library, mp3 downloads, playlist files, SoundCloud
-provider, ratings/tags. These can be added later as phase 2.
+Included: YouTube search → play/queue → transport (pause, prev/next, ±10s
+seek, stop), shuffle + repeat, favourites, playlists (save/load the queue
+locally, load YouTube playlist URLs), now-playing with album art. Deliberately
+**not** included yet (were in v4): mp3 downloads, SoundCloud provider,
+ratings/tags. These can be added later as phase 2.
 
 Known rough edges (alpha API):
-- Per-row buttons use a fixed pool of 80 handlers; result/queue lists past 80
-  rows won't have working buttons (search caps well below this).
+- Per-row buttons use a fixed pool of 80 handlers; lists show at most 80
+  clickable rows and note "…and N more" past that (queued tracks beyond the
+  cap still auto-play in order).
 - Now-playing polls mpv every ~2s (bar widget) — position updates aren't
   frame-smooth, they tick.
 - Queue is in-memory (panel state); it isn't persisted across Noctalia restarts.

@@ -17,8 +17,8 @@ Then open **Settings → Plugins** to configure.
 
 ### Music (YouTube + Local) — `yordle/music-yt`
 GUI music panel: search YouTube (and optionally local files), play or queue,
-transport controls, now-playing header. Streams via **yt-dlp + mpv** — no
-Mopidy, no accounts.
+favourites and playlists, transport controls, now-playing bar. Streams via
+**yt-dlp + mpv** — no Mopidy, no accounts.
 
 **Requires** `yt-dlp`, `mpv`, and `socat` on `PATH`. See
 [`music-yt/README.md`](music-yt/README.md) for setup, wiring, and how it works.
