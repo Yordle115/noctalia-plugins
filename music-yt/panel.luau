@@ -1,15 +1,23 @@
 -- =============================================================================
---  panel.luau — Music (YouTube + Local)  v0.3.0
+--  panel.luau — Music (YouTube + Local)  v0.4.0
 --  yt-dlp + mpv backend. Search YouTube, play/queue, favourites, playlists.
---  Layout: search always on top, tabs (Queue / Favourites / Playlists) below,
---  single ui.scroll body (multiple scroll regions break input focus — do not
---  reintroduce them).
+--
+--  Layout: a single column — tab bar (Search / Queue / Favourites / Playlists),
+--  ONE ui.scroll body, and a now-playing bar pinned at the bottom. Keep it to
+--  a single scroll region: multiple scroll regions break input focus.
+--
+--  Every list row shows the same actions (play / add-to-queue / extra), wired
+--  to a fixed pool of literal global handlers (onRowPlayN / onRowAddN /
+--  onRowXN) that dispatch through rowAct() based on the active tab. _G is
+--  read-only in this sandbox, so the pool MUST stay declared literally — see
+--  the end of this file. Lists cap their clickable rows at POOL.
 -- =============================================================================
 
 local SOCKET   = "/tmp/noctalia-music-mpv.sock"
 local DATA_DIR = noctalia.expandPath("~/.config/noctalia-music")
 local FAV_FILE = DATA_DIR .. "/favourites.json"
 local PL_FILE  = DATA_DIR .. "/playlists.json"
+local POOL     = 80   -- size of the literal per-row handler pool below
 
 -- ---------- config ----------
 local function cfg()
@@ -28,47 +36,63 @@ local function sq(s)
 end
 
 -- ---------- view state ----------
-local TAB_QUEUE = "queue"
-local TAB_FAVS  = "favourites"
-local TAB_PL    = "playlists"
+local TAB_SEARCH = "search"
+local TAB_QUEUE  = "queue"
+local TAB_FAVS   = "favourites"
+local TAB_PL     = "playlists"
 
 local state = {
-  tab        = TAB_QUEUE,
-  query      = "",
-  results    = {},   -- search results { {id,title,url,uploader,duration,source} }
-  queue      = {},   -- { {title,url,uploader,duration} }
-  queueIdx   = 0,
-  favourites = {},   -- { {title,url,uploader,duration} }
-  playlists  = {},   -- { name = { {track}, ... }, ... }
-  plNames    = {},   -- sorted list of playlist names (for stable row indexing)
-  nowPlaying = { title = "", uploader = "", url = "", thumbnail = "", playing = false, paused = false },
-  position   = 0,
-  duration   = 0,
-  artPath    = nil,   -- local downloaded album-art file for now-playing
-  starting   = false,
-  shuffle    = false,  -- when on, playNext picks a random unplayed queue item
-  repeatQueue = false, -- when on, queue loops back to start after the last track
-  busy       = false,
-  status     = "",
-  loaded     = false,  -- have we loaded persisted data yet
+  tab         = TAB_SEARCH,
+  query       = "",
+  results     = {},   -- search results { {id,title,url,uploader,duration,source,thumbnail} }
+  queue       = {},   -- { {title,url,uploader,duration,thumbnail} }
+  queueIdx    = 0,
+  favourites  = {},   -- { {title,url,uploader,duration} }
+  playlists   = {},   -- name -> { track, ... }
+  plNames     = {},   -- sorted playlist names (stable row indexing)
+  nowPlaying  = { title = "", uploader = "", url = "", thumbnail = "", playing = false, paused = false },
+  position    = 0,
+  duration    = 0,
+  artPath     = nil,   -- downloaded album-art file for now-playing
+  starting    = false,
+  shuffle     = false,  -- when on, upcoming queue items are shuffled
+  repeatQueue = false,  -- when on, queue loops back to start after the last track
+  busy        = false,
+  status      = "",
+  loaded      = false,  -- have we loaded persisted data yet
 }
 
+-- forward declarations (callbacks near the bottom close over these)
+local render
+local refreshNowPlaying
+
+-- shallow copy of the track fields we keep in queue/favourites/playlists
+local function asTrack(t)
+  return {
+    title = t.title, url = t.url,
+    uploader = t.uploader or "", duration = t.duration or 0,
+    thumbnail = t.thumbnail,
+  }
+end
+
 -- ---------- persistence ----------
+local function refreshPlNames()
+  state.plNames = {}
+  for name in pairs(state.playlists) do table.insert(state.plNames, name) end
+  table.sort(state.plNames)
+end
+
 -- Load favourites + playlists from disk into state (once, on open).
 local function loadData()
   noctalia.runAsync("mkdir -p " .. sq(DATA_DIR), function()
-    -- favourites
     noctalia.runAsync("cat " .. sq(FAV_FILE) .. " 2>/dev/null", function(res)
       local ok, parsed = pcall(function() return noctalia.json.decode(res.stdout or "") end)
       if ok and type(parsed) == "table" then state.favourites = parsed end
-      -- playlists
       noctalia.runAsync("cat " .. sq(PL_FILE) .. " 2>/dev/null", function(r2)
         local ok2, parsed2 = pcall(function() return noctalia.json.decode(r2.stdout or "") end)
         if ok2 and type(parsed2) == "table" then
           state.playlists = parsed2
-          state.plNames = {}
-          for name, _ in pairs(parsed2) do table.insert(state.plNames, name) end
-          table.sort(state.plNames)
+          refreshPlNames()
         end
         state.loaded = true
         render()
@@ -85,10 +109,7 @@ end
 local function savePlaylists()
   local json = noctalia.json.encode(state.playlists)
   noctalia.runAsync("mkdir -p " .. sq(DATA_DIR) .. "; printf '%s' " .. sq(json) .. " > " .. sq(PL_FILE), nil)
-  -- refresh sorted name list
-  state.plNames = {}
-  for name, _ in pairs(state.playlists) do table.insert(state.plNames, name) end
-  table.sort(state.plNames)
+  refreshPlNames()
 end
 
 -- ---------- favourites helpers ----------
@@ -99,15 +120,6 @@ local function isFav(url)
   return false
 end
 
-local function addFav(track)
-  if isFav(track.url) then return end
-  table.insert(state.favourites, {
-    title = track.title, url = track.url,
-    uploader = track.uploader or "", duration = track.duration or 0,
-  })
-  saveFavourites()
-end
-
 local function removeFav(url)
   for i, t in ipairs(state.favourites) do
     if t.url == url then table.remove(state.favourites, i); break end
@@ -116,7 +128,12 @@ local function removeFav(url)
 end
 
 local function toggleFav(track)
-  if isFav(track.url) then removeFav(track.url) else addFav(track) end
+  if isFav(track.url) then
+    removeFav(track.url)
+  else
+    table.insert(state.favourites, asTrack(track))
+    saveFavourites()
+  end
   render()
 end
 
@@ -207,15 +224,23 @@ local function enqueue(track)
   end
 end
 
--- forward ref so playNext (defined earlier) can trigger a reshuffle on loop-back
-local _shuffleQueue
+-- Fisher-Yates shuffle of the queue, keeping the currently-playing track where
+-- it is (shuffle only the items after the current one).
+local function shuffleQueue()
+  if #state.queue < 2 then return end
+  local startI = (state.queueIdx > 0) and (state.queueIdx + 1) or 1
+  for i = #state.queue, startI + 1, -1 do
+    local j = math.random(startI, i)
+    state.queue[i], state.queue[j] = state.queue[j], state.queue[i]
+  end
+end
 
 local function playNext()
   if state.queueIdx > 0 and state.queueIdx < #state.queue then
     playQueueIndex(state.queueIdx + 1)
   elseif state.repeatQueue and #state.queue > 0 then
     -- loop back to the start; reshuffle first if shuffle is on
-    if state.shuffle and _shuffleQueue then _shuffleQueue() end
+    if state.shuffle then shuffleQueue() end
     playQueueIndex(1)
   else
     state.nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false }
@@ -261,25 +286,6 @@ local function seekRelative(delta)
   noctalia.runAsync("sleep 0.15", function() refreshNowPlaying() end)
 end
 
--- Fisher-Yates shuffle of the queue, keeping the currently-playing track where
--- it is (shuffle only the items after the current one).
-local function shuffleQueue()
-  if #state.queue < 2 then return end
-  local startI = (state.queueIdx > 0) and (state.queueIdx + 1) or 1
-  for i = #state.queue, startI + 1, -1 do
-    local j = math.random(startI, i)
-    state.queue[i], state.queue[j] = state.queue[j], state.queue[i]
-  end
-end
-_shuffleQueue = shuffleQueue  -- fulfill the forward ref used by playNext
-
-local function toggleShuffle()
-  state.shuffle = not state.shuffle
-  if state.shuffle then shuffleQueue() end
-  state.status = state.shuffle and "Shuffle on" or "Shuffle off"
-  render()
-end
-
 local function stopPlayback()
   mpvSend('{"command":["quit"]}', nil)
   state.nowPlaying = { title = "", uploader = "", url = "", playing = false, paused = false }
@@ -287,6 +293,17 @@ local function stopPlayback()
   state.position = 0
   state.duration = 0
   noctalia.runAsync("sleep 0.2; rm -f " .. sq(SOCKET), function() render() end)
+end
+
+local function removeQueueIndex(i)
+  if not state.queue[i] then return end
+  table.remove(state.queue, i)
+  if i == state.queueIdx then
+    state.queueIdx = 0
+  elseif i < state.queueIdx then
+    state.queueIdx = state.queueIdx - 1
+  end
+  render()
 end
 
 -- ---------- search ----------
@@ -314,6 +331,7 @@ end
 local function doSearch(q)
   q = q and noctalia.string.trim(q) or ""
   state.query = q
+  state.tab = TAB_SEARCH
   if q == "" then state.results = {}; render(); return end
   if not noctalia.commandExists("yt-dlp") then
     state.status = "yt-dlp not found on PATH"; state.results = {}; render(); return
@@ -333,14 +351,12 @@ local function doSearch(q)
         .. "\\( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.opus' -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.wav' \\) "
         .. "2>/dev/null | grep -i -F " .. sq(q) .. " | head -n " .. tostring(c.results)
       noctalia.runAsync(findCmd, function(lres)
-        local locals = {}
+        local merged = {}
         for line in (lres.stdout or ""):gmatch("[^\n]+") do
           local fname = line:gsub("^.*/", ""):gsub("%.%w+$", "")
-          table.insert(locals, { id = line, title = fname, url = line,
+          table.insert(merged, { id = line, title = fname, url = line,
             uploader = "Local file", duration = 0, source = "Local" })
         end
-        local merged = {}
-        for _, r in ipairs(locals) do table.insert(merged, r) end
         for _, r in ipairs(ytResults) do table.insert(merged, r) end
         state.results = merged; state.busy = false; render()
       end)
@@ -350,7 +366,25 @@ local function doSearch(q)
   end)
 end
 
--- ---------- YouTube playlist by URL ----------
+-- ---------- playlists (queue <-> disk, plus YouTube playlist URLs) ----------
+-- Append tracks to the queue; optionally replace it and start from the top.
+local function addTracksToQueue(tracks, replace, statusText)
+  if replace then
+    state.queue = {}
+    state.queueIdx = 0
+  end
+  for _, t in ipairs(tracks) do
+    table.insert(state.queue, asTrack(t))
+  end
+  state.status = statusText
+  state.tab = TAB_QUEUE
+  if replace or not state.nowPlaying.playing then
+    playQueueIndex(1)
+  else
+    render()
+  end
+end
+
 local function loadYoutubePlaylist(url, replace)
   url = noctalia.string.trim(url)
   if url == "" then return end
@@ -366,24 +400,10 @@ local function loadYoutubePlaylist(url, replace)
   noctalia.runAsync(cmd, function(res)
     local tracks = parseSearchJson(res.stdout)
     if #tracks == 0 then state.status = "Playlist empty or failed"; render(); return end
-    if replace then
-      state.queue = {}
-      state.queueIdx = 0
-    end
-    for _, t in ipairs(tracks) do
-      table.insert(state.queue, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration, thumbnail = t.thumbnail })
-    end
-    state.status = "Loaded " .. #tracks .. " tracks"
-    state.tab = TAB_QUEUE
-    if replace or not state.nowPlaying.playing then
-      playQueueIndex(1)
-    else
-      render()
-    end
+    addTracksToQueue(tracks, replace, "Loaded " .. #tracks .. " tracks")
   end)
 end
 
--- ---------- local playlists (save/load the queue) ----------
 local function saveQueueAsPlaylist(name)
   name = noctalia.string.trim(name)
   if name == "" or #state.queue == 0 then
@@ -391,9 +411,7 @@ local function saveQueueAsPlaylist(name)
     render(); return
   end
   local copy = {}
-  for _, t in ipairs(state.queue) do
-    table.insert(copy, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration, thumbnail = t.thumbnail })
-  end
+  for _, t in ipairs(state.queue) do table.insert(copy, asTrack(t)) end
   state.playlists[name] = copy
   savePlaylists()
   state.status = "Saved playlist: " .. name
@@ -403,19 +421,39 @@ end
 local function loadPlaylist(name, replace)
   local pl = state.playlists[name]
   if not pl then return end
-  if replace then state.queue = {}; state.queueIdx = 0 end
-  for _, t in ipairs(pl) do
-    table.insert(state.queue, { title = t.title, url = t.url, uploader = t.uploader, duration = t.duration, thumbnail = t.thumbnail })
-  end
-  state.status = (replace and "Playing " or "Queued ") .. name
-  state.tab = TAB_QUEUE
-  if replace or not state.nowPlaying.playing then playQueueIndex(1) else render() end
+  addTracksToQueue(pl, replace, (replace and "Playing " or "Queued ") .. name)
 end
 
 local function deletePlaylist(name)
   state.playlists[name] = nil
   savePlaylists()
   render()
+end
+
+-- ---------- launcher bridge ----------
+-- The /music-yt launcher provider publishes play/queue requests on the shared
+-- state channel ("launcher_request"). Poll it on open + every tick and act on
+-- fresh requests (the nonce starts with the epoch the request was sent).
+local lastLauncherNonce = nil
+
+local function checkLauncherRequest()
+  local ok, req = pcall(function()
+    return noctalia.state and noctalia.state.get and noctalia.state.get("launcher_request")
+  end)
+  if not ok or type(req) ~= "table" or not req.url then return end
+  local nonce = tostring(req.nonce or "")
+  if nonce == "" or nonce == lastLauncherNonce then return end
+  lastLauncherNonce = nonce
+  local sent = tonumber(nonce:match("^(%d+)"))
+  local now = tonumber(noctalia.formatTime("%s"))
+  if sent and now and (now - sent) > 60 then return end
+  local track = { title = req.title or req.url, url = req.url, uploader = "", duration = 0 }
+  if req.action == "play" then
+    table.insert(state.queue, track)
+    playQueueIndex(#state.queue)
+  else
+    enqueue(track)
+  end
 end
 
 -- ---------- format helpers ----------
@@ -433,104 +471,40 @@ end
 --  RENDER
 -- =====================================================================
 
-local function starButton(track, keyPrefix)
-  local fav = isFav(track.url)
-  return ui.button({
-    glyph = fav and "heart-filled" or "heart",
-    variant = fav and "primary" or "ghost",
-    onClick = keyPrefix,
-  })
-end
-
-local function nowPlayingBar()
-  local np = state.nowPlaying
-  local hasTrack = np.playing and np.title ~= ""
-  local titleText = hasTrack and np.title or "Nothing playing"
-  local subText = hasTrack and (np.uploader ~= "" and np.uploader or "—") or ""
-  local playGlyph = np.paused and "player-play" or "player-pause"
-  if not hasTrack then playGlyph = "player-play" end
-
-  local progressText = ""
-  local progressFrac = 0
-  if hasTrack and state.duration > 0 then
-    progressText = fmtDuration(state.position) .. " / " .. fmtDuration(state.duration)
-    progressFrac = state.position / state.duration
-  end
-
-  -- album art: real image if downloaded, else a music glyph in a box
-  local art
-  if state.artPath and hasTrack then
-    art = ui.image({ path = state.artPath, width = 64, height = 64, radius = 8, fit = "cover" })
-  else
-    art = ui.column({ width = 64, height = 64, align = "center", justify = "center", fill = "surface_variant", radius = 8 }, {
-      ui.glyph({ name = "music", size = 28, color = "on_surface_variant" }),
-    })
-  end
-
-  local children = {
-    art,
-    ui.column({ gap = 3, flexGrow = 1 }, {
-      ui.label({ text = titleText, fontSize = 15, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
-      ui.label({ text = subText, fontSize = 12, color = "on_surface_variant", maxLines = 1 }),
-      (hasTrack and ui.progress({ progress = progressFrac, fill = "primary", track = "surface_variant", radius = 3, height = 4 }) or ui.spacer({ height = 0 })),
-      (progressText ~= "" and ui.label({ text = progressText, fontSize = 10, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
-    }),
+-- One list row: [lead?] [title / subtitle] [play] [+queue?] [extra?].
+-- Buttons dispatch through the shared handler pool (rowAct at the bottom).
+local function listRow(i, r)
+  local kids = {}
+  if r.lead then kids[#kids + 1] = r.lead end
+  local textCol = {
+    ui.label({ text = r.title, fontSize = 13, color = r.titleColor or "on_surface", maxLines = 1 }),
   }
-  if hasTrack then
-    table.insert(children, ui.button({
-      glyph = isFav(np.url) and "heart-filled" or "heart",
-      variant = isFav(np.url) and "primary" or "ghost",
-      onClick = "onNowFav",
-    }))
+  if r.sub and r.sub ~= "" then
+    textCol[#textCol + 1] = ui.label({ text = r.sub, fontSize = 11, color = "on_surface_variant", maxLines = 1 })
   end
-  table.insert(children, ui.row({ gap = 4, align = "center" }, {
-    ui.button({ glyph = "rewind-backward-10", variant = "ghost", onClick = "onSeekBack" }),
-    ui.button({ glyph = "player-skip-back", variant = "ghost", onClick = "onPrev" }),
-    ui.button({ glyph = playGlyph, variant = "primary", onClick = "onPlayPause" }),
-    ui.button({ glyph = "player-skip-forward", variant = "ghost", onClick = "onNext" }),
-    ui.button({ glyph = "rewind-forward-10", variant = "ghost", onClick = "onSeekFwd" }),
-    ui.button({ glyph = "player-stop", variant = "ghost", onClick = "onStop" }),
-    ui.button({ glyph = "arrows-shuffle", variant = state.shuffle and "primary" or "ghost", onClick = "onShuffle" }),
-    ui.button({ glyph = "repeat", variant = state.repeatQueue and "primary" or "ghost", onClick = "onRepeat" }),
-  }))
-
-  return ui.row({ gap = 12, align = "center" }, children)
+  kids[#kids + 1] = ui.column({ gap = 1, flexGrow = 1 }, textCol)
+  kids[#kids + 1] = ui.button({ glyph = "player-play", variant = "ghost", onClick = "onRowPlay" .. i })
+  if r.add then
+    kids[#kids + 1] = ui.button({ glyph = "plus", variant = "ghost", onClick = "onRowAdd" .. i })
+  end
+  if r.x then
+    kids[#kids + 1] = ui.button({ glyph = r.x, variant = r.xVariant or "ghost", onClick = "onRowX" .. i })
+  end
+  return ui.row({ gap = 6, align = "center", key = state.tab .. "-" .. i }, kids)
 end
 
-local function searchBox()
-  return ui.input({
-    key = "search",
-    placeholder = "Search YouTube…",
-    flexGrow = 1,
-    fontSize = 14,
-    onChange = "onSearchChange",
-    onSubmit = "onSearchSubmit",
+local function emptyNote(text)
+  return ui.label({ text = text, fontSize = 13, color = "on_surface_variant", paddingV = 8 })
+end
+
+local function overflowNote(total, extra)
+  return ui.label({
+    text = "…and " .. (total - POOL) .. " more" .. (extra or ""),
+    fontSize = 11, color = "on_surface_variant", paddingV = 4,
   })
 end
 
-local function sourceBadge(src)
-  local color = src == "YT" and "primary" or "secondary"
-  return ui.label({ text = src, fontSize = 10, fontWeight = "bold", color = color })
-end
-
-local function resultRow(r, idx)
-  local dur = fmtDuration(r.duration)
-  return ui.row({ gap = 6, align = "center", key = "res-" .. idx }, {
-    ui.column({ gap = 1, flexGrow = 1 }, {
-      ui.label({ text = r.title, fontSize = 13, color = "on_surface", maxLines = 1 }),
-      ui.row({ gap = 6, align = "center" }, {
-        sourceBadge(r.source),
-        ui.label({ text = r.uploader, fontSize = 11, color = "on_surface_variant", maxLines = 1, flexGrow = 1 }),
-        (dur ~= "" and ui.label({ text = dur, fontSize = 10, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
-      }),
-    }),
-    ui.button({ glyph = isFav(r.url) and "heart-filled" or "heart", variant = isFav(r.url) and "primary" or "ghost", onClick = "onResFav" .. idx }),
-    ui.button({ glyph = "player-play", variant = "outline", onClick = "onResPlay" .. idx }),
-    ui.button({ glyph = "plus", variant = "ghost", onClick = "onResQueue" .. idx }),
-  })
-end
-
-local function resultsSection()
+local function searchView()
   if state.busy then
     return ui.row({ gap = 8, align = "center", paddingV = 8 }, {
       ui.glyph({ name = "loader", size = 16, color = "primary" }),
@@ -538,157 +512,188 @@ local function resultsSection()
     })
   end
   if #state.results == 0 then
-    return ui.label({ text = "No results.", fontSize = 13, color = "on_surface_variant", paddingV = 8 })
+    return emptyNote(state.query == "" and "Type a search and press Enter." or "No results.")
   end
-  local children = {}
+  local kids = {}
   for i, r in ipairs(state.results) do
-    table.insert(children, resultRow(r, i))
-    if i < #state.results then table.insert(children, ui.separator({ spacing = 4 })) end
+    if i > POOL then kids[#kids + 1] = overflowNote(#state.results); break end
+    local sub = r.uploader
+    local dur = fmtDuration(r.duration)
+    if dur ~= "" then sub = (sub ~= "" and sub .. " · " or "") .. dur end
+    local fav = isFav(r.url)
+    kids[#kids + 1] = listRow(i, {
+      title = r.title, sub = sub, add = true,
+      x = fav and "heart-filled" or "heart",
+      xVariant = fav and "primary" or "ghost",
+    })
   end
-  return ui.column({ gap = 2 }, children)
-end
-
--- ---- queue view ----
-local function queueRow(item, idx)
-  local isCurrent = (idx == state.queueIdx)
-  return ui.row({ gap = 8, align = "center", key = "q-" .. idx }, {
-    (isCurrent
-      and ui.glyph({ name = "volume", size = 14, color = "primary" })
-      or ui.label({ text = tostring(idx), fontSize = 11, color = "on_surface_variant", width = 20 })),
-    ui.column({ gap = 1, flexGrow = 1 }, {
-      ui.label({ text = item.title, fontSize = 13, color = isCurrent and "primary" or "on_surface", maxLines = 1 }),
-      ui.label({ text = item.uploader, fontSize = 11, color = "on_surface_variant", maxLines = 1 }),
-    }),
-    ui.button({ glyph = "player-play", variant = "ghost", onClick = "onQPlay" .. idx }),
-    ui.button({ glyph = "x", variant = "ghost", onClick = "onQDel" .. idx }),
-  })
+  return ui.column({ gap = 2 }, kids)
 end
 
 local function queueView()
-  local children = {}
-  table.insert(children, ui.row({ align = "center", justify = "space_between" }, {
+  if #state.queue == 0 then
+    return emptyNote("Queue is empty — search and add tracks.")
+  end
+  local kids = {}
+  kids[#kids + 1] = ui.row({ align = "center", justify = "space_between" }, {
     ui.label({ text = #state.queue .. " in queue", fontSize = 11, color = "on_surface_variant" }),
     ui.button({ text = "Clear", glyph = "trash", variant = "ghost", onClick = "onQueueClear" }),
-  }))
-  if #state.queue == 0 then
-    table.insert(children, ui.label({ text = "Queue is empty. Search and add tracks.", fontSize = 13, color = "on_surface_variant", paddingV = 8 }))
-  else
-    for i, item in ipairs(state.queue) do table.insert(children, queueRow(item, i)) end
-    -- save-as-playlist row
-    table.insert(children, ui.separator({ spacing = 6 }))
-    table.insert(children, ui.row({ gap = 6, align = "center" }, {
-      ui.input({ key = "save-pl", placeholder = "Save queue as playlist…", flexGrow = 1, fontSize = 12, onSubmit = "onSavePlaylist" }),
-    }))
-  end
-  return ui.column({ gap = 2 }, children)
-end
-
--- ---- favourites view ----
-local function favRow(t, idx)
-  return ui.row({ gap = 8, align = "center", key = "fav-" .. idx }, {
-    ui.column({ gap = 1, flexGrow = 1 }, {
-      ui.label({ text = t.title, fontSize = 13, color = "on_surface", maxLines = 1 }),
-      ui.label({ text = t.uploader, fontSize = 11, color = "on_surface_variant", maxLines = 1 }),
-    }),
-    ui.button({ glyph = "player-play", variant = "outline", onClick = "onFavPlay" .. idx }),
-    ui.button({ glyph = "plus", variant = "ghost", onClick = "onFavQueue" .. idx }),
-    ui.button({ glyph = "heart-filled", variant = "primary", onClick = "onFavDel" .. idx }),
   })
+  for i, item in ipairs(state.queue) do
+    if i > POOL then kids[#kids + 1] = overflowNote(#state.queue, " (they still auto-play)"); break end
+    local isCurrent = (i == state.queueIdx)
+    kids[#kids + 1] = listRow(i, {
+      lead = isCurrent
+        and ui.glyph({ name = "volume", size = 14, color = "primary" })
+        or ui.label({ text = tostring(i), fontSize = 11, color = "on_surface_variant", width = 20 }),
+      title = item.title, sub = item.uploader,
+      titleColor = isCurrent and "primary" or nil,
+      x = "x",
+    })
+  end
+  kids[#kids + 1] = ui.separator({ spacing = 6 })
+  kids[#kids + 1] = ui.row({ gap = 6, align = "center" }, {
+    ui.input({ key = "save-pl", placeholder = "Save queue as playlist…", flexGrow = 1, fontSize = 12, onSubmit = "onSavePlaylist" }),
+  })
+  return ui.column({ gap = 2 }, kids)
 end
 
 local function favView()
   if #state.favourites == 0 then
-    return ui.label({ text = "No favourites yet. Tap the heart on a track.", fontSize = 13, color = "on_surface_variant", paddingV = 8 })
+    return emptyNote("No favourites yet — tap the heart on a track.")
   end
-  local children = {}
-  for i, t in ipairs(state.favourites) do table.insert(children, favRow(t, i)) end
-  return ui.column({ gap = 2 }, children)
-end
-
--- ---- playlists view ----
-local function playlistRow(name, idx)
-  local count = #(state.playlists[name] or {})
-  return ui.row({ gap = 8, align = "center", key = "pl-" .. idx }, {
-    ui.glyph({ name = "playlist", size = 16, color = "on_surface_variant" }),
-    ui.column({ gap = 1, flexGrow = 1 }, {
-      ui.label({ text = name, fontSize = 13, color = "on_surface", maxLines = 1 }),
-      ui.label({ text = count .. " tracks", fontSize = 10, color = "on_surface_variant" }),
-    }),
-    ui.button({ glyph = "player-play", variant = "outline", onClick = "onPlPlay" .. idx }),
-    ui.button({ glyph = "plus", variant = "ghost", onClick = "onPlQueue" .. idx }),
-    ui.button({ glyph = "trash", variant = "ghost", onClick = "onPlDel" .. idx }),
-  })
+  local kids = {}
+  for i, t in ipairs(state.favourites) do
+    if i > POOL then kids[#kids + 1] = overflowNote(#state.favourites); break end
+    kids[#kids + 1] = listRow(i, {
+      title = t.title, sub = t.uploader, add = true,
+      x = "heart-filled", xVariant = "primary",
+    })
+  end
+  return ui.column({ gap = 2 }, kids)
 end
 
 local function playlistsView()
-  local children = {}
-  -- load-from-URL row
-  table.insert(children, ui.row({ gap = 6, align = "center" }, {
+  local kids = {}
+  kids[#kids + 1] = ui.row({ gap = 6, align = "center" }, {
     ui.input({ key = "yt-pl-url", placeholder = "Load YouTube playlist URL…", flexGrow = 1, fontSize = 12, onSubmit = "onLoadYtPlaylist" }),
-  }))
-  table.insert(children, ui.separator({ spacing = 6 }))
+  })
+  kids[#kids + 1] = ui.separator({ spacing = 6 })
   if #state.plNames == 0 then
-    table.insert(children, ui.label({ text = "No saved playlists. Save a queue from the Queue tab.", fontSize = 13, color = "on_surface_variant", paddingV = 6 }))
+    kids[#kids + 1] = emptyNote("No saved playlists — save a queue from the Queue tab.")
   else
-    for i, name in ipairs(state.plNames) do table.insert(children, playlistRow(name, i)) end
+    for i, name in ipairs(state.plNames) do
+      if i > POOL then kids[#kids + 1] = overflowNote(#state.plNames); break end
+      kids[#kids + 1] = listRow(i, {
+        lead = ui.glyph({ name = "playlist", size = 16, color = "on_surface_variant" }),
+        title = name, sub = #(state.playlists[name] or {}) .. " tracks",
+        add = true, x = "trash",
+      })
+    end
   end
-  return ui.column({ gap = 4 }, children)
+  return ui.column({ gap = 4 }, kids)
 end
 
 local function bodyView()
+  if state.tab == TAB_QUEUE then return queueView() end
   if state.tab == TAB_FAVS then return favView() end
   if state.tab == TAB_PL then return playlistsView() end
-  return queueView()
+  return searchView()
 end
 
--- horizontal tab bar (sits atop the right panel)
 local function tabBar()
-  local function tabBtn(id, label, glyph)
+  local function tabBtn(id, label)
     return ui.button({
-      text = label, glyph = glyph,
+      text = label,
       variant = state.tab == id and "primary" or "ghost",
       onClick = "onTab_" .. id, flexGrow = 1,
     })
   end
-  return ui.row({ gap = 6 }, {
-    tabBtn(TAB_QUEUE, "Queue", "list"),
-    tabBtn(TAB_FAVS, "Favourites", "heart"),
-    tabBtn(TAB_PL, "Playlists", "playlist"),
+  return ui.row({ gap = 4, align = "center" }, {
+    tabBtn(TAB_SEARCH, "Search"),
+    tabBtn(TAB_QUEUE, "Queue"),
+    tabBtn(TAB_FAVS, "Favourites"),
+    tabBtn(TAB_PL, "Playlists"),
+    ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
+  })
+end
+
+local function nowPlayingBar()
+  local np = state.nowPlaying
+  local hasTrack = np.playing and np.title ~= ""
+
+  -- idle: one slim row (play starts the queue, if any)
+  if not hasTrack then
+    return ui.row({ gap = 8, align = "center" }, {
+      ui.glyph({ name = "music", size = 16, color = "on_surface_variant" }),
+      ui.label({ text = "Nothing playing", fontSize = 12, color = "on_surface_variant", flexGrow = 1 }),
+      ui.button({ glyph = "player-play", variant = "ghost", onClick = "onPlayPause" }),
+    })
+  end
+
+  local art
+  if state.artPath then
+    art = ui.image({ path = state.artPath, width = 48, height = 48, radius = 6, fit = "cover" })
+  else
+    art = ui.column({ width = 48, height = 48, align = "center", justify = "center", fill = "surface_variant", radius = 6 }, {
+      ui.glyph({ name = "music", size = 22, color = "on_surface_variant" }),
+    })
+  end
+
+  local frac = 0
+  local infoKids = { art }
+  local textKids = {
+    ui.label({ text = np.title, fontSize = 13, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
+    ui.label({ text = np.uploader ~= "" and np.uploader or "—", fontSize = 11, color = "on_surface_variant", maxLines = 1 }),
+  }
+  if state.duration > 0 then
+    frac = state.position / state.duration
+    textKids[#textKids + 1] = ui.progress({ progress = frac, fill = "primary", track = "surface_variant", radius = 2, height = 3 })
+  end
+  infoKids[#infoKids + 1] = ui.column({ gap = 2, flexGrow = 1 }, textKids)
+  if state.duration > 0 then
+    infoKids[#infoKids + 1] = ui.label({
+      text = fmtDuration(state.position) .. " / " .. fmtDuration(state.duration),
+      fontSize = 10, color = "on_surface_variant",
+    })
+  end
+
+  local fav = isFav(np.url)
+  local controls = ui.row({ gap = 4, align = "center", justify = "center" }, {
+    ui.button({ glyph = "rewind-backward-10", variant = "ghost", onClick = "onSeekBack" }),
+    ui.button({ glyph = "player-skip-back", variant = "ghost", onClick = "onPrev" }),
+    ui.button({ glyph = np.paused and "player-play" or "player-pause", variant = "primary", onClick = "onPlayPause" }),
+    ui.button({ glyph = "player-skip-forward", variant = "ghost", onClick = "onNext" }),
+    ui.button({ glyph = "rewind-forward-10", variant = "ghost", onClick = "onSeekFwd" }),
+    ui.button({ glyph = "player-stop", variant = "ghost", onClick = "onStop" }),
+    ui.button({ glyph = "arrows-shuffle", variant = state.shuffle and "primary" or "ghost", onClick = "onShuffle" }),
+    ui.button({ glyph = "repeat", variant = state.repeatQueue and "primary" or "ghost", onClick = "onRepeat" }),
+    ui.button({ glyph = fav and "heart-filled" or "heart", variant = fav and "primary" or "ghost", onClick = "onNowFav" }),
+  })
+
+  return ui.column({ gap = 6 }, {
+    ui.row({ gap = 10, align = "center" }, infoKids),
+    controls,
   })
 end
 
 function render()
-  -- LEFT: search box + results
-  local leftPanel = ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, {
-    ui.label({ text = "Search", fontSize = 12, fontWeight = "bold", color = "on_surface_variant" }),
-    ui.row({ gap = 8, align = "center" }, { searchBox() }),
-    ui.scroll({ flexGrow = 1, gap = 4 }, { resultsSection() }),
-  })
-
-  -- RIGHT: Queue / Favourites / Playlists tabs + content
-  local rightPanel = ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, {
-    tabBar(),
-    ui.scroll({ flexGrow = 1, gap = 4 }, { bodyView() }),
-  })
-
-  panel.render(ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, {
-    -- top bar: title + close
-    ui.row({ align = "center", justify = "space_between" }, {
-      ui.label({ text = "Music", fontSize = 16, fontWeight = "bold", color = "primary", flexGrow = 1 }),
-      ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
-    }),
-    -- MAIN AREA: split search-left / tabs-right, fills available height
-    ui.row({ flexGrow = 1, gap = 14, align = "stretch" }, {
-      leftPanel,
-      ui.separator({ orientation = "vertical", spacing = 2 }),
-      rightPanel,
-    }),
-    -- status line (transient)
-    (state.status ~= "" and ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" }) or ui.spacer({ height = 0 })),
-    -- NOW PLAYING bar pinned at the bottom, full width
-    ui.separator({ spacing = 2 }),
-    nowPlayingBar(),
-  }))
+  local kids = { tabBar() }
+  if state.tab == TAB_SEARCH then
+    kids[#kids + 1] = ui.row({ gap = 8, align = "center" }, {
+      ui.input({
+        key = "search", placeholder = "Search YouTube…", flexGrow = 1, fontSize = 14,
+        onChange = "onSearchChange", onSubmit = "onSearchSubmit",
+      }),
+    })
+  end
+  kids[#kids + 1] = ui.scroll({ flexGrow = 1, gap = 4 }, { bodyView() })
+  if state.status ~= "" then
+    kids[#kids + 1] = ui.label({ text = state.status, fontSize = 11, color = "on_surface_variant" })
+  end
+  kids[#kids + 1] = ui.separator({ spacing = 2 })
+  kids[#kids + 1] = nowPlayingBar()
+  panel.render(ui.column({ flexGrow = 1, gap = 8, align = "stretch" }, kids))
 end
 
 -- =====================================================================
@@ -699,6 +704,7 @@ function onOpen(context)
   state.status = ""
   panel.setWantsSecondTicks(true)
   if not state.loaded then loadData() end
+  checkLauncherRequest()
   if context and noctalia.string.trim(context) ~= "" then
     doSearch(context)
   else
@@ -707,6 +713,7 @@ function onOpen(context)
 end
 
 function update()
+  checkLauncherRequest()
   if state.nowPlaying.playing or state.starting then refreshNowPlaying() end
 end
 
@@ -715,7 +722,6 @@ function onClose() panel.close() end
 -- search
 function onSearchSubmit(text) doSearch(text) end
 function onSearchChange(text) state.query = text end
-function onClearSearch() state.results = {}; state.query = ""; render() end
 
 -- transport
 function onPlayPause()
@@ -725,478 +731,172 @@ function onPlayPause()
   end
   togglePause()
 end
-function onPrev() if state.queueIdx > 1 then playQueueIndex(state.queueIdx - 1) end end
-function onNext() if state.queueIdx > 0 and state.queueIdx < #state.queue then playQueueIndex(state.queueIdx + 1) end end
+function onPrev()
+  -- a few seconds in, "previous" restarts the current track (like most players)
+  if state.nowPlaying.playing and state.position > 5 then
+    mpvSend('{"command":["seek",0,"absolute"]}', nil)
+    noctalia.runAsync("sleep 0.15", function() refreshNowPlaying() end)
+  elseif state.queueIdx > 1 then
+    playQueueIndex(state.queueIdx - 1)
+  end
+end
+function onNext() if state.nowPlaying.playing then playNext() end end
 function onStop() stopPlayback() end
 function onSeekBack() seekRelative(-10) end
 function onSeekFwd() seekRelative(10) end
-function onShuffle() toggleShuffle() end
-function onRepeat() state.repeatQueue = not state.repeatQueue; state.status = state.repeatQueue and "Repeat on" or "Repeat off"; render() end
+function onShuffle()
+  state.shuffle = not state.shuffle
+  if state.shuffle then shuffleQueue() end
+  state.status = state.shuffle and "Shuffle on" or "Shuffle off"
+  render()
+end
+function onRepeat()
+  state.repeatQueue = not state.repeatQueue
+  state.status = state.repeatQueue and "Repeat on" or "Repeat off"
+  render()
+end
 function onNowFav() if state.nowPlaying.url ~= "" then toggleFav(state.nowPlaying) end end
 
 -- tabs
+function onTab_search() state.tab = TAB_SEARCH; render() end
 function onTab_queue() state.tab = TAB_QUEUE; render() end
 function onTab_favourites() state.tab = TAB_FAVS; render() end
 function onTab_playlists() state.tab = TAB_PL; render() end
 
--- queue
+-- queue / playlists
 function onQueueClear() state.queue = {}; state.queueIdx = 0; render() end
 function onSavePlaylist(text) saveQueueAsPlaylist(text) end
-
--- playlists
 function onLoadYtPlaylist(text) loadYoutubePlaylist(text, false) end
 
--- ---- dispatchers for per-row handlers ----
-local function resPlay(i) local r = state.results[i]; if r then table.insert(state.queue, {title=r.title,url=r.url,uploader=r.uploader,duration=r.duration,thumbnail=r.thumbnail}); playQueueIndex(#state.queue) end end
-local function resQueue(i) local r = state.results[i]; if r then enqueue({title=r.title,url=r.url,uploader=r.uploader,duration=r.duration,thumbnail=r.thumbnail}) end end
-local function resFav(i) local r = state.results[i]; if r then toggleFav(r) end end
-local function qPlay(i) playQueueIndex(i) end
-local function qDel(i) if state.queue[i] then table.remove(state.queue,i); if i==state.queueIdx then state.queueIdx=0 elseif i<state.queueIdx then state.queueIdx=state.queueIdx-1 end; render() end end
-local function favPlay(i) local t = state.favourites[i]; if t then table.insert(state.queue,{title=t.title,url=t.url,uploader=t.uploader,duration=t.duration,thumbnail=t.thumbnail}); playQueueIndex(#state.queue) end end
-local function favQueue(i) local t = state.favourites[i]; if t then enqueue({title=t.title,url=t.url,uploader=t.uploader,duration=t.duration,thumbnail=t.thumbnail}) end end
-local function favDel(i) local t = state.favourites[i]; if t then removeFav(t.url); render() end end
-local function plPlay(i) local n = state.plNames[i]; if n then loadPlaylist(n, true) end end
-local function plQueue(i) local n = state.plNames[i]; if n then loadPlaylist(n, false) end end
-local function plDel(i) local n = state.plNames[i]; if n then deletePlaylist(n) end end
+-- ---------------------------------------------------------------------
+--  Per-row dispatch. Only one list is visible at a time, so every row
+--  shares the same three slots: 1 = play, 2 = add to queue, 3 = extra
+--  (heart on search, remove on queue/favourites, delete on playlists).
+-- ---------------------------------------------------------------------
+local function rowAct(i, slot)
+  if state.tab == TAB_SEARCH then
+    local r = state.results[i]
+    if not r then return end
+    if slot == 1 then
+      table.insert(state.queue, asTrack(r))
+      playQueueIndex(#state.queue)
+    elseif slot == 2 then
+      enqueue(asTrack(r))
+    else
+      toggleFav(r)
+    end
+  elseif state.tab == TAB_QUEUE then
+    if slot == 1 then
+      playQueueIndex(i)
+    elseif slot == 3 then
+      removeQueueIndex(i)
+    end
+  elseif state.tab == TAB_FAVS then
+    local t = state.favourites[i]
+    if not t then return end
+    if slot == 1 then
+      table.insert(state.queue, asTrack(t))
+      playQueueIndex(#state.queue)
+    elseif slot == 2 then
+      enqueue(asTrack(t))
+    else
+      removeFav(t.url); render()
+    end
+  else -- playlists
+    local name = state.plNames[i]
+    if not name then return end
+    if slot == 1 then
+      loadPlaylist(name, true)
+    elseif slot == 2 then
+      loadPlaylist(name, false)
+    else
+      deletePlaylist(name)
+    end
+  end
+end
 
--- ---- explicit global handler pool (40 each; _G is read-only so declare literally) ----
-function onResPlay1() resPlay(1) end
-function onResQueue1() resQueue(1) end
-function onResFav1() resFav(1) end
-function onQPlay1() qPlay(1) end
-function onQDel1() qDel(1) end
-function onFavPlay1() favPlay(1) end
-function onFavQueue1() favQueue(1) end
-function onFavDel1() favDel(1) end
-function onPlPlay1() plPlay(1) end
-function onPlQueue1() plQueue(1) end
-function onPlDel1() plDel(1) end
-function onResPlay2() resPlay(2) end
-function onResQueue2() resQueue(2) end
-function onResFav2() resFav(2) end
-function onQPlay2() qPlay(2) end
-function onQDel2() qDel(2) end
-function onFavPlay2() favPlay(2) end
-function onFavQueue2() favQueue(2) end
-function onFavDel2() favDel(2) end
-function onPlPlay2() plPlay(2) end
-function onPlQueue2() plQueue(2) end
-function onPlDel2() plDel(2) end
-function onResPlay3() resPlay(3) end
-function onResQueue3() resQueue(3) end
-function onResFav3() resFav(3) end
-function onQPlay3() qPlay(3) end
-function onQDel3() qDel(3) end
-function onFavPlay3() favPlay(3) end
-function onFavQueue3() favQueue(3) end
-function onFavDel3() favDel(3) end
-function onPlPlay3() plPlay(3) end
-function onPlQueue3() plQueue(3) end
-function onPlDel3() plDel(3) end
-function onResPlay4() resPlay(4) end
-function onResQueue4() resQueue(4) end
-function onResFav4() resFav(4) end
-function onQPlay4() qPlay(4) end
-function onQDel4() qDel(4) end
-function onFavPlay4() favPlay(4) end
-function onFavQueue4() favQueue(4) end
-function onFavDel4() favDel(4) end
-function onPlPlay4() plPlay(4) end
-function onPlQueue4() plQueue(4) end
-function onPlDel4() plDel(4) end
-function onResPlay5() resPlay(5) end
-function onResQueue5() resQueue(5) end
-function onResFav5() resFav(5) end
-function onQPlay5() qPlay(5) end
-function onQDel5() qDel(5) end
-function onFavPlay5() favPlay(5) end
-function onFavQueue5() favQueue(5) end
-function onFavDel5() favDel(5) end
-function onPlPlay5() plPlay(5) end
-function onPlQueue5() plQueue(5) end
-function onPlDel5() plDel(5) end
-function onResPlay6() resPlay(6) end
-function onResQueue6() resQueue(6) end
-function onResFav6() resFav(6) end
-function onQPlay6() qPlay(6) end
-function onQDel6() qDel(6) end
-function onFavPlay6() favPlay(6) end
-function onFavQueue6() favQueue(6) end
-function onFavDel6() favDel(6) end
-function onPlPlay6() plPlay(6) end
-function onPlQueue6() plQueue(6) end
-function onPlDel6() plDel(6) end
-function onResPlay7() resPlay(7) end
-function onResQueue7() resQueue(7) end
-function onResFav7() resFav(7) end
-function onQPlay7() qPlay(7) end
-function onQDel7() qDel(7) end
-function onFavPlay7() favPlay(7) end
-function onFavQueue7() favQueue(7) end
-function onFavDel7() favDel(7) end
-function onPlPlay7() plPlay(7) end
-function onPlQueue7() plQueue(7) end
-function onPlDel7() plDel(7) end
-function onResPlay8() resPlay(8) end
-function onResQueue8() resQueue(8) end
-function onResFav8() resFav(8) end
-function onQPlay8() qPlay(8) end
-function onQDel8() qDel(8) end
-function onFavPlay8() favPlay(8) end
-function onFavQueue8() favQueue(8) end
-function onFavDel8() favDel(8) end
-function onPlPlay8() plPlay(8) end
-function onPlQueue8() plQueue(8) end
-function onPlDel8() plDel(8) end
-function onResPlay9() resPlay(9) end
-function onResQueue9() resQueue(9) end
-function onResFav9() resFav(9) end
-function onQPlay9() qPlay(9) end
-function onQDel9() qDel(9) end
-function onFavPlay9() favPlay(9) end
-function onFavQueue9() favQueue(9) end
-function onFavDel9() favDel(9) end
-function onPlPlay9() plPlay(9) end
-function onPlQueue9() plQueue(9) end
-function onPlDel9() plDel(9) end
-function onResPlay10() resPlay(10) end
-function onResQueue10() resQueue(10) end
-function onResFav10() resFav(10) end
-function onQPlay10() qPlay(10) end
-function onQDel10() qDel(10) end
-function onFavPlay10() favPlay(10) end
-function onFavQueue10() favQueue(10) end
-function onFavDel10() favDel(10) end
-function onPlPlay10() plPlay(10) end
-function onPlQueue10() plQueue(10) end
-function onPlDel10() plDel(10) end
-function onResPlay11() resPlay(11) end
-function onResQueue11() resQueue(11) end
-function onResFav11() resFav(11) end
-function onQPlay11() qPlay(11) end
-function onQDel11() qDel(11) end
-function onFavPlay11() favPlay(11) end
-function onFavQueue11() favQueue(11) end
-function onFavDel11() favDel(11) end
-function onPlPlay11() plPlay(11) end
-function onPlQueue11() plQueue(11) end
-function onPlDel11() plDel(11) end
-function onResPlay12() resPlay(12) end
-function onResQueue12() resQueue(12) end
-function onResFav12() resFav(12) end
-function onQPlay12() qPlay(12) end
-function onQDel12() qDel(12) end
-function onFavPlay12() favPlay(12) end
-function onFavQueue12() favQueue(12) end
-function onFavDel12() favDel(12) end
-function onPlPlay12() plPlay(12) end
-function onPlQueue12() plQueue(12) end
-function onPlDel12() plDel(12) end
-function onResPlay13() resPlay(13) end
-function onResQueue13() resQueue(13) end
-function onResFav13() resFav(13) end
-function onQPlay13() qPlay(13) end
-function onQDel13() qDel(13) end
-function onFavPlay13() favPlay(13) end
-function onFavQueue13() favQueue(13) end
-function onFavDel13() favDel(13) end
-function onPlPlay13() plPlay(13) end
-function onPlQueue13() plQueue(13) end
-function onPlDel13() plDel(13) end
-function onResPlay14() resPlay(14) end
-function onResQueue14() resQueue(14) end
-function onResFav14() resFav(14) end
-function onQPlay14() qPlay(14) end
-function onQDel14() qDel(14) end
-function onFavPlay14() favPlay(14) end
-function onFavQueue14() favQueue(14) end
-function onFavDel14() favDel(14) end
-function onPlPlay14() plPlay(14) end
-function onPlQueue14() plQueue(14) end
-function onPlDel14() plDel(14) end
-function onResPlay15() resPlay(15) end
-function onResQueue15() resQueue(15) end
-function onResFav15() resFav(15) end
-function onQPlay15() qPlay(15) end
-function onQDel15() qDel(15) end
-function onFavPlay15() favPlay(15) end
-function onFavQueue15() favQueue(15) end
-function onFavDel15() favDel(15) end
-function onPlPlay15() plPlay(15) end
-function onPlQueue15() plQueue(15) end
-function onPlDel15() plDel(15) end
-function onResPlay16() resPlay(16) end
-function onResQueue16() resQueue(16) end
-function onResFav16() resFav(16) end
-function onQPlay16() qPlay(16) end
-function onQDel16() qDel(16) end
-function onFavPlay16() favPlay(16) end
-function onFavQueue16() favQueue(16) end
-function onFavDel16() favDel(16) end
-function onPlPlay16() plPlay(16) end
-function onPlQueue16() plQueue(16) end
-function onPlDel16() plDel(16) end
-function onResPlay17() resPlay(17) end
-function onResQueue17() resQueue(17) end
-function onResFav17() resFav(17) end
-function onQPlay17() qPlay(17) end
-function onQDel17() qDel(17) end
-function onFavPlay17() favPlay(17) end
-function onFavQueue17() favQueue(17) end
-function onFavDel17() favDel(17) end
-function onPlPlay17() plPlay(17) end
-function onPlQueue17() plQueue(17) end
-function onPlDel17() plDel(17) end
-function onResPlay18() resPlay(18) end
-function onResQueue18() resQueue(18) end
-function onResFav18() resFav(18) end
-function onQPlay18() qPlay(18) end
-function onQDel18() qDel(18) end
-function onFavPlay18() favPlay(18) end
-function onFavQueue18() favQueue(18) end
-function onFavDel18() favDel(18) end
-function onPlPlay18() plPlay(18) end
-function onPlQueue18() plQueue(18) end
-function onPlDel18() plDel(18) end
-function onResPlay19() resPlay(19) end
-function onResQueue19() resQueue(19) end
-function onResFav19() resFav(19) end
-function onQPlay19() qPlay(19) end
-function onQDel19() qDel(19) end
-function onFavPlay19() favPlay(19) end
-function onFavQueue19() favQueue(19) end
-function onFavDel19() favDel(19) end
-function onPlPlay19() plPlay(19) end
-function onPlQueue19() plQueue(19) end
-function onPlDel19() plDel(19) end
-function onResPlay20() resPlay(20) end
-function onResQueue20() resQueue(20) end
-function onResFav20() resFav(20) end
-function onQPlay20() qPlay(20) end
-function onQDel20() qDel(20) end
-function onFavPlay20() favPlay(20) end
-function onFavQueue20() favQueue(20) end
-function onFavDel20() favDel(20) end
-function onPlPlay20() plPlay(20) end
-function onPlQueue20() plQueue(20) end
-function onPlDel20() plDel(20) end
-function onResPlay21() resPlay(21) end
-function onResQueue21() resQueue(21) end
-function onResFav21() resFav(21) end
-function onQPlay21() qPlay(21) end
-function onQDel21() qDel(21) end
-function onFavPlay21() favPlay(21) end
-function onFavQueue21() favQueue(21) end
-function onFavDel21() favDel(21) end
-function onPlPlay21() plPlay(21) end
-function onPlQueue21() plQueue(21) end
-function onPlDel21() plDel(21) end
-function onResPlay22() resPlay(22) end
-function onResQueue22() resQueue(22) end
-function onResFav22() resFav(22) end
-function onQPlay22() qPlay(22) end
-function onQDel22() qDel(22) end
-function onFavPlay22() favPlay(22) end
-function onFavQueue22() favQueue(22) end
-function onFavDel22() favDel(22) end
-function onPlPlay22() plPlay(22) end
-function onPlQueue22() plQueue(22) end
-function onPlDel22() plDel(22) end
-function onResPlay23() resPlay(23) end
-function onResQueue23() resQueue(23) end
-function onResFav23() resFav(23) end
-function onQPlay23() qPlay(23) end
-function onQDel23() qDel(23) end
-function onFavPlay23() favPlay(23) end
-function onFavQueue23() favQueue(23) end
-function onFavDel23() favDel(23) end
-function onPlPlay23() plPlay(23) end
-function onPlQueue23() plQueue(23) end
-function onPlDel23() plDel(23) end
-function onResPlay24() resPlay(24) end
-function onResQueue24() resQueue(24) end
-function onResFav24() resFav(24) end
-function onQPlay24() qPlay(24) end
-function onQDel24() qDel(24) end
-function onFavPlay24() favPlay(24) end
-function onFavQueue24() favQueue(24) end
-function onFavDel24() favDel(24) end
-function onPlPlay24() plPlay(24) end
-function onPlQueue24() plQueue(24) end
-function onPlDel24() plDel(24) end
-function onResPlay25() resPlay(25) end
-function onResQueue25() resQueue(25) end
-function onResFav25() resFav(25) end
-function onQPlay25() qPlay(25) end
-function onQDel25() qDel(25) end
-function onFavPlay25() favPlay(25) end
-function onFavQueue25() favQueue(25) end
-function onFavDel25() favDel(25) end
-function onPlPlay25() plPlay(25) end
-function onPlQueue25() plQueue(25) end
-function onPlDel25() plDel(25) end
-function onResPlay26() resPlay(26) end
-function onResQueue26() resQueue(26) end
-function onResFav26() resFav(26) end
-function onQPlay26() qPlay(26) end
-function onQDel26() qDel(26) end
-function onFavPlay26() favPlay(26) end
-function onFavQueue26() favQueue(26) end
-function onFavDel26() favDel(26) end
-function onPlPlay26() plPlay(26) end
-function onPlQueue26() plQueue(26) end
-function onPlDel26() plDel(26) end
-function onResPlay27() resPlay(27) end
-function onResQueue27() resQueue(27) end
-function onResFav27() resFav(27) end
-function onQPlay27() qPlay(27) end
-function onQDel27() qDel(27) end
-function onFavPlay27() favPlay(27) end
-function onFavQueue27() favQueue(27) end
-function onFavDel27() favDel(27) end
-function onPlPlay27() plPlay(27) end
-function onPlQueue27() plQueue(27) end
-function onPlDel27() plDel(27) end
-function onResPlay28() resPlay(28) end
-function onResQueue28() resQueue(28) end
-function onResFav28() resFav(28) end
-function onQPlay28() qPlay(28) end
-function onQDel28() qDel(28) end
-function onFavPlay28() favPlay(28) end
-function onFavQueue28() favQueue(28) end
-function onFavDel28() favDel(28) end
-function onPlPlay28() plPlay(28) end
-function onPlQueue28() plQueue(28) end
-function onPlDel28() plDel(28) end
-function onResPlay29() resPlay(29) end
-function onResQueue29() resQueue(29) end
-function onResFav29() resFav(29) end
-function onQPlay29() qPlay(29) end
-function onQDel29() qDel(29) end
-function onFavPlay29() favPlay(29) end
-function onFavQueue29() favQueue(29) end
-function onFavDel29() favDel(29) end
-function onPlPlay29() plPlay(29) end
-function onPlQueue29() plQueue(29) end
-function onPlDel29() plDel(29) end
-function onResPlay30() resPlay(30) end
-function onResQueue30() resQueue(30) end
-function onResFav30() resFav(30) end
-function onQPlay30() qPlay(30) end
-function onQDel30() qDel(30) end
-function onFavPlay30() favPlay(30) end
-function onFavQueue30() favQueue(30) end
-function onFavDel30() favDel(30) end
-function onPlPlay30() plPlay(30) end
-function onPlQueue30() plQueue(30) end
-function onPlDel30() plDel(30) end
-function onResPlay31() resPlay(31) end
-function onResQueue31() resQueue(31) end
-function onResFav31() resFav(31) end
-function onQPlay31() qPlay(31) end
-function onQDel31() qDel(31) end
-function onFavPlay31() favPlay(31) end
-function onFavQueue31() favQueue(31) end
-function onFavDel31() favDel(31) end
-function onPlPlay31() plPlay(31) end
-function onPlQueue31() plQueue(31) end
-function onPlDel31() plDel(31) end
-function onResPlay32() resPlay(32) end
-function onResQueue32() resQueue(32) end
-function onResFav32() resFav(32) end
-function onQPlay32() qPlay(32) end
-function onQDel32() qDel(32) end
-function onFavPlay32() favPlay(32) end
-function onFavQueue32() favQueue(32) end
-function onFavDel32() favDel(32) end
-function onPlPlay32() plPlay(32) end
-function onPlQueue32() plQueue(32) end
-function onPlDel32() plDel(32) end
-function onResPlay33() resPlay(33) end
-function onResQueue33() resQueue(33) end
-function onResFav33() resFav(33) end
-function onQPlay33() qPlay(33) end
-function onQDel33() qDel(33) end
-function onFavPlay33() favPlay(33) end
-function onFavQueue33() favQueue(33) end
-function onFavDel33() favDel(33) end
-function onPlPlay33() plPlay(33) end
-function onPlQueue33() plQueue(33) end
-function onPlDel33() plDel(33) end
-function onResPlay34() resPlay(34) end
-function onResQueue34() resQueue(34) end
-function onResFav34() resFav(34) end
-function onQPlay34() qPlay(34) end
-function onQDel34() qDel(34) end
-function onFavPlay34() favPlay(34) end
-function onFavQueue34() favQueue(34) end
-function onFavDel34() favDel(34) end
-function onPlPlay34() plPlay(34) end
-function onPlQueue34() plQueue(34) end
-function onPlDel34() plDel(34) end
-function onResPlay35() resPlay(35) end
-function onResQueue35() resQueue(35) end
-function onResFav35() resFav(35) end
-function onQPlay35() qPlay(35) end
-function onQDel35() qDel(35) end
-function onFavPlay35() favPlay(35) end
-function onFavQueue35() favQueue(35) end
-function onFavDel35() favDel(35) end
-function onPlPlay35() plPlay(35) end
-function onPlQueue35() plQueue(35) end
-function onPlDel35() plDel(35) end
-function onResPlay36() resPlay(36) end
-function onResQueue36() resQueue(36) end
-function onResFav36() resFav(36) end
-function onQPlay36() qPlay(36) end
-function onQDel36() qDel(36) end
-function onFavPlay36() favPlay(36) end
-function onFavQueue36() favQueue(36) end
-function onFavDel36() favDel(36) end
-function onPlPlay36() plPlay(36) end
-function onPlQueue36() plQueue(36) end
-function onPlDel36() plDel(36) end
-function onResPlay37() resPlay(37) end
-function onResQueue37() resQueue(37) end
-function onResFav37() resFav(37) end
-function onQPlay37() qPlay(37) end
-function onQDel37() qDel(37) end
-function onFavPlay37() favPlay(37) end
-function onFavQueue37() favQueue(37) end
-function onFavDel37() favDel(37) end
-function onPlPlay37() plPlay(37) end
-function onPlQueue37() plQueue(37) end
-function onPlDel37() plDel(37) end
-function onResPlay38() resPlay(38) end
-function onResQueue38() resQueue(38) end
-function onResFav38() resFav(38) end
-function onQPlay38() qPlay(38) end
-function onQDel38() qDel(38) end
-function onFavPlay38() favPlay(38) end
-function onFavQueue38() favQueue(38) end
-function onFavDel38() favDel(38) end
-function onPlPlay38() plPlay(38) end
-function onPlQueue38() plQueue(38) end
-function onPlDel38() plDel(38) end
-function onResPlay39() resPlay(39) end
-function onResQueue39() resQueue(39) end
-function onResFav39() resFav(39) end
-function onQPlay39() qPlay(39) end
-function onQDel39() qDel(39) end
-function onFavPlay39() favPlay(39) end
-function onFavQueue39() favQueue(39) end
-function onFavDel39() favDel(39) end
-function onPlPlay39() plPlay(39) end
-function onPlQueue39() plQueue(39) end
-function onPlDel39() plDel(39) end
-function onResPlay40() resPlay(40) end
-function onResQueue40() resQueue(40) end
-function onResFav40() resFav(40) end
-function onQPlay40() qPlay(40) end
-function onQDel40() qDel(40) end
-function onFavPlay40() favPlay(40) end
-function onFavQueue40() favQueue(40) end
-function onFavDel40() favDel(40) end
-function onPlPlay40() plPlay(40) end
-function onPlQueue40() plQueue(40) end
-function onPlDel40() plDel(40) end
+-- ---------------------------------------------------------------------
+--  Literal handler pool (POOL rows × 3 slots). _G is read-only in this
+--  sandbox, so these cannot be generated in a loop — keep them literal
+--  and keep the count in sync with POOL above.
+-- ---------------------------------------------------------------------
+function onRowPlay1() rowAct(1, 1) end function onRowAdd1() rowAct(1, 2) end function onRowX1() rowAct(1, 3) end
+function onRowPlay2() rowAct(2, 1) end function onRowAdd2() rowAct(2, 2) end function onRowX2() rowAct(2, 3) end
+function onRowPlay3() rowAct(3, 1) end function onRowAdd3() rowAct(3, 2) end function onRowX3() rowAct(3, 3) end
+function onRowPlay4() rowAct(4, 1) end function onRowAdd4() rowAct(4, 2) end function onRowX4() rowAct(4, 3) end
+function onRowPlay5() rowAct(5, 1) end function onRowAdd5() rowAct(5, 2) end function onRowX5() rowAct(5, 3) end
+function onRowPlay6() rowAct(6, 1) end function onRowAdd6() rowAct(6, 2) end function onRowX6() rowAct(6, 3) end
+function onRowPlay7() rowAct(7, 1) end function onRowAdd7() rowAct(7, 2) end function onRowX7() rowAct(7, 3) end
+function onRowPlay8() rowAct(8, 1) end function onRowAdd8() rowAct(8, 2) end function onRowX8() rowAct(8, 3) end
+function onRowPlay9() rowAct(9, 1) end function onRowAdd9() rowAct(9, 2) end function onRowX9() rowAct(9, 3) end
+function onRowPlay10() rowAct(10, 1) end function onRowAdd10() rowAct(10, 2) end function onRowX10() rowAct(10, 3) end
+function onRowPlay11() rowAct(11, 1) end function onRowAdd11() rowAct(11, 2) end function onRowX11() rowAct(11, 3) end
+function onRowPlay12() rowAct(12, 1) end function onRowAdd12() rowAct(12, 2) end function onRowX12() rowAct(12, 3) end
+function onRowPlay13() rowAct(13, 1) end function onRowAdd13() rowAct(13, 2) end function onRowX13() rowAct(13, 3) end
+function onRowPlay14() rowAct(14, 1) end function onRowAdd14() rowAct(14, 2) end function onRowX14() rowAct(14, 3) end
+function onRowPlay15() rowAct(15, 1) end function onRowAdd15() rowAct(15, 2) end function onRowX15() rowAct(15, 3) end
+function onRowPlay16() rowAct(16, 1) end function onRowAdd16() rowAct(16, 2) end function onRowX16() rowAct(16, 3) end
+function onRowPlay17() rowAct(17, 1) end function onRowAdd17() rowAct(17, 2) end function onRowX17() rowAct(17, 3) end
+function onRowPlay18() rowAct(18, 1) end function onRowAdd18() rowAct(18, 2) end function onRowX18() rowAct(18, 3) end
+function onRowPlay19() rowAct(19, 1) end function onRowAdd19() rowAct(19, 2) end function onRowX19() rowAct(19, 3) end
+function onRowPlay20() rowAct(20, 1) end function onRowAdd20() rowAct(20, 2) end function onRowX20() rowAct(20, 3) end
+function onRowPlay21() rowAct(21, 1) end function onRowAdd21() rowAct(21, 2) end function onRowX21() rowAct(21, 3) end
+function onRowPlay22() rowAct(22, 1) end function onRowAdd22() rowAct(22, 2) end function onRowX22() rowAct(22, 3) end
+function onRowPlay23() rowAct(23, 1) end function onRowAdd23() rowAct(23, 2) end function onRowX23() rowAct(23, 3) end
+function onRowPlay24() rowAct(24, 1) end function onRowAdd24() rowAct(24, 2) end function onRowX24() rowAct(24, 3) end
+function onRowPlay25() rowAct(25, 1) end function onRowAdd25() rowAct(25, 2) end function onRowX25() rowAct(25, 3) end
+function onRowPlay26() rowAct(26, 1) end function onRowAdd26() rowAct(26, 2) end function onRowX26() rowAct(26, 3) end
+function onRowPlay27() rowAct(27, 1) end function onRowAdd27() rowAct(27, 2) end function onRowX27() rowAct(27, 3) end
+function onRowPlay28() rowAct(28, 1) end function onRowAdd28() rowAct(28, 2) end function onRowX28() rowAct(28, 3) end
+function onRowPlay29() rowAct(29, 1) end function onRowAdd29() rowAct(29, 2) end function onRowX29() rowAct(29, 3) end
+function onRowPlay30() rowAct(30, 1) end function onRowAdd30() rowAct(30, 2) end function onRowX30() rowAct(30, 3) end
+function onRowPlay31() rowAct(31, 1) end function onRowAdd31() rowAct(31, 2) end function onRowX31() rowAct(31, 3) end
+function onRowPlay32() rowAct(32, 1) end function onRowAdd32() rowAct(32, 2) end function onRowX32() rowAct(32, 3) end
+function onRowPlay33() rowAct(33, 1) end function onRowAdd33() rowAct(33, 2) end function onRowX33() rowAct(33, 3) end
+function onRowPlay34() rowAct(34, 1) end function onRowAdd34() rowAct(34, 2) end function onRowX34() rowAct(34, 3) end
+function onRowPlay35() rowAct(35, 1) end function onRowAdd35() rowAct(35, 2) end function onRowX35() rowAct(35, 3) end
+function onRowPlay36() rowAct(36, 1) end function onRowAdd36() rowAct(36, 2) end function onRowX36() rowAct(36, 3) end
+function onRowPlay37() rowAct(37, 1) end function onRowAdd37() rowAct(37, 2) end function onRowX37() rowAct(37, 3) end
+function onRowPlay38() rowAct(38, 1) end function onRowAdd38() rowAct(38, 2) end function onRowX38() rowAct(38, 3) end
+function onRowPlay39() rowAct(39, 1) end function onRowAdd39() rowAct(39, 2) end function onRowX39() rowAct(39, 3) end
+function onRowPlay40() rowAct(40, 1) end function onRowAdd40() rowAct(40, 2) end function onRowX40() rowAct(40, 3) end
+function onRowPlay41() rowAct(41, 1) end function onRowAdd41() rowAct(41, 2) end function onRowX41() rowAct(41, 3) end
+function onRowPlay42() rowAct(42, 1) end function onRowAdd42() rowAct(42, 2) end function onRowX42() rowAct(42, 3) end
+function onRowPlay43() rowAct(43, 1) end function onRowAdd43() rowAct(43, 2) end function onRowX43() rowAct(43, 3) end
+function onRowPlay44() rowAct(44, 1) end function onRowAdd44() rowAct(44, 2) end function onRowX44() rowAct(44, 3) end
+function onRowPlay45() rowAct(45, 1) end function onRowAdd45() rowAct(45, 2) end function onRowX45() rowAct(45, 3) end
+function onRowPlay46() rowAct(46, 1) end function onRowAdd46() rowAct(46, 2) end function onRowX46() rowAct(46, 3) end
+function onRowPlay47() rowAct(47, 1) end function onRowAdd47() rowAct(47, 2) end function onRowX47() rowAct(47, 3) end
+function onRowPlay48() rowAct(48, 1) end function onRowAdd48() rowAct(48, 2) end function onRowX48() rowAct(48, 3) end
+function onRowPlay49() rowAct(49, 1) end function onRowAdd49() rowAct(49, 2) end function onRowX49() rowAct(49, 3) end
+function onRowPlay50() rowAct(50, 1) end function onRowAdd50() rowAct(50, 2) end function onRowX50() rowAct(50, 3) end
+function onRowPlay51() rowAct(51, 1) end function onRowAdd51() rowAct(51, 2) end function onRowX51() rowAct(51, 3) end
+function onRowPlay52() rowAct(52, 1) end function onRowAdd52() rowAct(52, 2) end function onRowX52() rowAct(52, 3) end
+function onRowPlay53() rowAct(53, 1) end function onRowAdd53() rowAct(53, 2) end function onRowX53() rowAct(53, 3) end
+function onRowPlay54() rowAct(54, 1) end function onRowAdd54() rowAct(54, 2) end function onRowX54() rowAct(54, 3) end
+function onRowPlay55() rowAct(55, 1) end function onRowAdd55() rowAct(55, 2) end function onRowX55() rowAct(55, 3) end
+function onRowPlay56() rowAct(56, 1) end function onRowAdd56() rowAct(56, 2) end function onRowX56() rowAct(56, 3) end
+function onRowPlay57() rowAct(57, 1) end function onRowAdd57() rowAct(57, 2) end function onRowX57() rowAct(57, 3) end
+function onRowPlay58() rowAct(58, 1) end function onRowAdd58() rowAct(58, 2) end function onRowX58() rowAct(58, 3) end
+function onRowPlay59() rowAct(59, 1) end function onRowAdd59() rowAct(59, 2) end function onRowX59() rowAct(59, 3) end
+function onRowPlay60() rowAct(60, 1) end function onRowAdd60() rowAct(60, 2) end function onRowX60() rowAct(60, 3) end
+function onRowPlay61() rowAct(61, 1) end function onRowAdd61() rowAct(61, 2) end function onRowX61() rowAct(61, 3) end
+function onRowPlay62() rowAct(62, 1) end function onRowAdd62() rowAct(62, 2) end function onRowX62() rowAct(62, 3) end
+function onRowPlay63() rowAct(63, 1) end function onRowAdd63() rowAct(63, 2) end function onRowX63() rowAct(63, 3) end
+function onRowPlay64() rowAct(64, 1) end function onRowAdd64() rowAct(64, 2) end function onRowX64() rowAct(64, 3) end
+function onRowPlay65() rowAct(65, 1) end function onRowAdd65() rowAct(65, 2) end function onRowX65() rowAct(65, 3) end
+function onRowPlay66() rowAct(66, 1) end function onRowAdd66() rowAct(66, 2) end function onRowX66() rowAct(66, 3) end
+function onRowPlay67() rowAct(67, 1) end function onRowAdd67() rowAct(67, 2) end function onRowX67() rowAct(67, 3) end
+function onRowPlay68() rowAct(68, 1) end function onRowAdd68() rowAct(68, 2) end function onRowX68() rowAct(68, 3) end
+function onRowPlay69() rowAct(69, 1) end function onRowAdd69() rowAct(69, 2) end function onRowX69() rowAct(69, 3) end
+function onRowPlay70() rowAct(70, 1) end function onRowAdd70() rowAct(70, 2) end function onRowX70() rowAct(70, 3) end
+function onRowPlay71() rowAct(71, 1) end function onRowAdd71() rowAct(71, 2) end function onRowX71() rowAct(71, 3) end
+function onRowPlay72() rowAct(72, 1) end function onRowAdd72() rowAct(72, 2) end function onRowX72() rowAct(72, 3) end
+function onRowPlay73() rowAct(73, 1) end function onRowAdd73() rowAct(73, 2) end function onRowX73() rowAct(73, 3) end
+function onRowPlay74() rowAct(74, 1) end function onRowAdd74() rowAct(74, 2) end function onRowX74() rowAct(74, 3) end
+function onRowPlay75() rowAct(75, 1) end function onRowAdd75() rowAct(75, 2) end function onRowX75() rowAct(75, 3) end
+function onRowPlay76() rowAct(76, 1) end function onRowAdd76() rowAct(76, 2) end function onRowX76() rowAct(76, 3) end
+function onRowPlay77() rowAct(77, 1) end function onRowAdd77() rowAct(77, 2) end function onRowX77() rowAct(77, 3) end
+function onRowPlay78() rowAct(78, 1) end function onRowAdd78() rowAct(78, 2) end function onRowX78() rowAct(78, 3) end
+function onRowPlay79() rowAct(79, 1) end function onRowAdd79() rowAct(79, 2) end function onRowX79() rowAct(79, 3) end
+function onRowPlay80() rowAct(80, 1) end function onRowAdd80() rowAct(80, 2) end function onRowX80() rowAct(80, 3) end
