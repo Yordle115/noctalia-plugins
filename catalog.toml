@@ -1,11 +1,23 @@
 [[plugin]]
 id           = "yordle/music-yt"
 name         = "Music (YouTube + Local)"
-version      = "0.3.6"
+version      = "0.4.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "music"
-description  = "Search YouTube and your local library, play or queue, with transport controls. Streams via yt-dlp + mpv — no Mopidy, no accounts."
+description  = "Search YouTube and your local library, play or queue, favourites and playlists, with transport controls. Streams via yt-dlp + mpv — no Mopidy, no accounts."
 deprecated   = false
 min_noctalia = "5.0.0"
 tags         = ["music", "youtube", "yt-dlp", "mpv"]
+
+[[plugin]]
+id           = "yordle/todo"
+name         = "To-Do"
+version      = "0.1.0"
+author       = "yordle"
+license      = "MIT"
+icon         = "checklist"
+description  = "Simple persistent to-do list: panel with Active/Done tabs, pinning, a bar widget with the open-task count, and a /todo launcher command to add or complete tasks."
+deprecated   = false
+min_noctalia = "5.0.0"
+tags         = ["todo", "tasks", "productivity"]

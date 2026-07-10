@@ -22,3 +22,9 @@ favourites and playlists, transport controls, now-playing bar. Streams via
 
 **Requires** `yt-dlp`, `mpv`, and `socat` on `PATH`. See
 [`music-yt/README.md`](music-yt/README.md) for setup, wiring, and how it works.
+
+### To-Do — `yordle/todo`
+Simple persistent to-do list: panel with Active/Done tabs and pinning, bar
+widget with the open-task count, and a `/todo` launcher command to add or
+complete tasks. No external dependencies. See
+[`todo/README.md`](todo/README.md).
