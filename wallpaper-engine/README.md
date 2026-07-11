@@ -4,9 +4,12 @@ A frontend for [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaper
 (Steam Workshop / Wallpaper Engine wallpapers on Linux) with the two things the
 CLI doesn't give you:
 
-- **Per-monitor selection** — browse your subscribed Workshop wallpapers with
-  previews and assign each monitor its own wallpaper (or all at once). One
-  process drives all monitors by default.
+- **Per-monitor selection** — a two-pane panel: a **paginated** wallpaper list
+  with thumbnails on the left (no searching needed — page through everything),
+  and the selected wallpaper on the right with a big preview, monitor target
+  chips, Apply, and **in-panel playback settings** (FPS, audio, scaling,
+  auto-pause mode — saved as overrides that win over Settings → Plugins).
+  One process drives all monitors by default.
 - **Auto-pause** — wallpapers are paused via SIGSTOP (the process stops
   rendering and drops to ~zero CPU/GPU) **when a fullscreen app is running**
   by default — with transparent/blurred windows the wallpaper stays visible,
@@ -104,8 +107,10 @@ hl.bind("SUPER + W", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/wallpaper
   instantly on focus change.
 - Hyprland-only for now: monitor names and window state come from `hyprctl`,
   so other compositors get neither the monitor chips nor auto-pause.
-- The wallpaper list caps at 60 clickable rows — use the filter box to narrow
-  large collections.
+- The list shows 10 wallpapers per page; the filter box narrows it if paging
+  through a huge collection gets old.
+- FPS / audio / scaling changes take effect on the next launch — hit
+  "Restart to apply" (pause mode applies live within a second).
 - In single-process mode, changing one monitor's wallpaper relaunches the
   shared process, so other monitors' wallpapers restart briefly. Use
   `per-monitor` mode if that bothers you (at the cost of one process per

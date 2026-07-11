@@ -31,6 +31,8 @@ local function cfg()
     country = tostring(getCfg("country") or "Qatar"),
     method  = tonumber(getCfg("method")) or 10,
     h12     = getCfg("twelve_hour") ~= false,
+    lat     = tostring(getCfg("latitude") or "25.2854"),
+    lon     = tostring(getCfg("longitude") or "51.5310"),
   }
 end
 
@@ -109,6 +111,45 @@ local function saveCache(data)
   noctalia.runAsync("mkdir -p " .. sq(DATA_DIR) .. "; printf '%s' " .. sq(json) .. " > " .. sq(CACHE_FILE), nil)
 end
 
+-- ---------- fetching (with real diagnostics) ----------
+-- curl appends "@@HTTP:<code>" to the output (code 000 on network failure,
+-- where the curl error text lands in the body via 2>&1) so failures can be
+-- reported precisely instead of a generic "offline?".
+local UA = "noctalia-prayer-times (github.com/Yordle115/noctalia-plugins)"
+
+local function fetchCmd(url)
+  return "curl -sS -L --max-time 15 -A " .. sq(UA)
+    .. " -w '\\n@@HTTP:%{http_code}' " .. sq(url) .. " 2>&1"
+end
+
+local function splitHttp(out)
+  local body, code = tostring(out or ""):match("^(.-)\n?@@HTTP:(%d+)%s*$")
+  if not body then return tostring(out or ""), nil end
+  return body, tonumber(code)
+end
+
+-- primary: city lookup; fallback: coordinates (city resolution sometimes fails)
+local function apiUrls()
+  local c = cfg()
+  local city = (c.city:gsub(" ", "%%20"))
+  local country = (c.country:gsub(" ", "%%20"))
+  return {
+    "https://api.aladhan.com/v1/timingsByCity?city=" .. city
+      .. "&country=" .. country .. "&method=" .. tostring(c.method),
+    "https://api.aladhan.com/v1/timings?latitude=" .. c.lat
+      .. "&longitude=" .. c.lon .. "&method=" .. tostring(c.method),
+  }
+end
+
+local function describeFailure(body, code)
+  if code == nil or code == 0 then
+    local err = tostring(body or ""):match("curl: %(%d+%)[^\r\n]*") or "no network?"
+    return "Network error — " .. err
+  end
+  if code ~= 200 then return "AlAdhan API returned HTTP " .. code end
+  return "Unexpected API response (HTTP 200 but no timings)"
+end
+
 local function loadTimes(force)
   state.busy = true
   state.status = ""
@@ -122,21 +163,40 @@ local function loadTimes(force)
       render()
       return
     end
-    local c = cfg()
-    local city = (c.city:gsub(" ", "%%20"))
-    local country = (c.country:gsub(" ", "%%20"))
-    local url = "https://api.aladhan.com/v1/timingsByCity?city=" .. city
-      .. "&country=" .. country .. "&method=" .. tostring(c.method)
-    noctalia.runAsync("curl -s --max-time 10 " .. sq(url), function(res)
-      state.busy = false
-      local data = parseApi(res.stdout)
+    local urls = apiUrls()
+    noctalia.runAsync(fetchCmd(urls[1]), function(res)
+      local body, code = splitHttp(res.stdout)
+      local data = parseApi(body)
       if data then
+        state.busy = false
         state.data = data
         saveCache(data)
-      else
-        state.status = "Couldn't fetch prayer times (offline?)"
+        render()
+        return
       end
-      render()
+      noctalia.runAsync(fetchCmd(urls[2]), function(r2)
+        state.busy = false
+        local d2 = parseApi((splitHttp(r2.stdout)))
+        if d2 then
+          state.data = d2
+          state.status = "City lookup failed — using coordinates"
+          saveCache(d2)
+          render()
+          return
+        end
+        -- both endpoints failed: a stale cached day beats nothing
+        noctalia.runAsync("cat " .. sq(CACHE_FILE) .. " 2>/dev/null", function(r3)
+          local ok, disk = pcall(function() return noctalia.json.decode(r3.stdout or "") end)
+          if ok and type(disk) == "table" and type(disk.timings) == "table" then
+            state.data = disk
+            state.status = "Offline — cached times from " .. tostring(disk.date or "?")
+              .. " (" .. describeFailure(body, code) .. ")"
+          else
+            state.status = describeFailure(body, code)
+          end
+          render()
+        end)
+      end)
     end)
   end
 

@@ -1,5 +1,5 @@
 -- =============================================================================
---  panel.luau — Music (YouTube + Local)  v0.4.0
+--  panel.luau — Music (YouTube + Local)  v0.4.1
 --  yt-dlp + mpv backend. Search YouTube, play/queue, favourites, playlists.
 --
 --  Layout: a single column — tab bar (Search / Queue / Favourites / Playlists),
@@ -60,6 +60,8 @@ local state = {
   busy        = false,
   status      = "",
   loaded      = false,  -- have we loaded persisted data yet
+  saveGen     = 1,      -- bumped after saving a playlist: new input key = cleared field
+  urlGen      = 1,      -- same, for the YouTube playlist URL input
 }
 
 -- forward declarations (callbacks near the bottom close over these)
@@ -400,6 +402,7 @@ local function loadYoutubePlaylist(url, replace)
   noctalia.runAsync(cmd, function(res)
     local tracks = parseSearchJson(res.stdout)
     if #tracks == 0 then state.status = "Playlist empty or failed"; render(); return end
+    state.urlGen = state.urlGen + 1
     addTracksToQueue(tracks, replace, "Loaded " .. #tracks .. " tracks")
   end)
 end
@@ -415,6 +418,7 @@ local function saveQueueAsPlaylist(name)
   state.playlists[name] = copy
   savePlaylists()
   state.status = "Saved playlist: " .. name
+  state.saveGen = state.saveGen + 1
   render()
 end
 
@@ -553,7 +557,7 @@ local function queueView()
   end
   kids[#kids + 1] = ui.separator({ spacing = 6 })
   kids[#kids + 1] = ui.row({ gap = 6, align = "center" }, {
-    ui.input({ key = "save-pl", placeholder = "Save queue as playlist…", flexGrow = 1, fontSize = 12, onSubmit = "onSavePlaylist" }),
+    ui.input({ key = "save-pl-" .. state.saveGen, placeholder = "Save queue as playlist…", flexGrow = 1, fontSize = 12, onSubmit = "onSavePlaylist" }),
   })
   return ui.column({ gap = 2 }, kids)
 end
@@ -576,7 +580,7 @@ end
 local function playlistsView()
   local kids = {}
   kids[#kids + 1] = ui.row({ gap = 6, align = "center" }, {
-    ui.input({ key = "yt-pl-url", placeholder = "Load YouTube playlist URL…", flexGrow = 1, fontSize = 12, onSubmit = "onLoadYtPlaylist" }),
+    ui.input({ key = "yt-pl-url-" .. state.urlGen, placeholder = "Load YouTube playlist URL…", flexGrow = 1, fontSize = 12, onSubmit = "onLoadYtPlaylist" }),
   })
   kids[#kids + 1] = ui.separator({ spacing = 6 })
   if #state.plNames == 0 then

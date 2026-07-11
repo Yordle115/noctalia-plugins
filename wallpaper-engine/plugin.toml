@@ -1,6 +1,6 @@
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.2.1"
+version      = "0.3.0"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
@@ -10,6 +10,8 @@ tags         = ["wallpaper", "wallpaper-engine", "hyprland", "steam-workshop"]
 
 # ---------------------------------------------------------------------------
 # Plugin-level settings (Settings -> Plugins)
+# NOTE: fps / mute_audio / volume / scaling / pause_mode are DEFAULTS — the
+# panel's in-app "Playback settings" save overrides that win over these.
 # ---------------------------------------------------------------------------
 [[setting]]
 key     = "workshop_dir"
@@ -81,8 +83,8 @@ default = ""
 [[panel]]
 id        = "panel"
 entry     = "panel.luau"
-width     = 520
-height    = 660
+width     = 880
+height    = 640
 placement = "floating"
 position  = "center"
 open_near_click = true
