@@ -11,6 +11,18 @@ min_noctalia = "5.0.0"
 tags         = ["music", "youtube", "yt-dlp", "mpv"]
 
 [[plugin]]
+id           = "yordle/wallpaper-engine"
+name         = "Wallpaper Engine"
+version      = "0.2.1"
+author       = "yordle"
+license      = "MIT"
+icon         = "photo"
+description  = "Frontend for linux-wallpaperengine: browse Steam Workshop wallpapers with previews, assign per monitor (one process drives all monitors), and auto-pause via SIGSTOP (near-zero CPU/GPU) — on fullscreen by default, or when windows are open/focused. Restores wallpapers on login."
+deprecated   = false
+min_noctalia = "5.0.0"
+tags         = ["wallpaper", "wallpaper-engine", "hyprland", "steam-workshop"]
+
+[[plugin]]
 id           = "yordle/prayer-times"
 name         = "Prayer Times"
 version      = "0.1.0"

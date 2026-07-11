@@ -1,0 +1,95 @@
+id           = "yordle/wallpaper-engine"
+name         = "Wallpaper Engine"
+version      = "0.2.1"
+min_noctalia = "5.0.0"
+author       = "yordle"
+license      = "MIT"
+icon         = "photo"
+description  = "Frontend for linux-wallpaperengine: browse Steam Workshop wallpapers with previews, assign per monitor (one process drives all monitors), and auto-pause via SIGSTOP (near-zero CPU/GPU) — on fullscreen by default, or when windows are open/focused. Restores wallpapers on login."
+tags         = ["wallpaper", "wallpaper-engine", "hyprland", "steam-workshop"]
+
+# ---------------------------------------------------------------------------
+# Plugin-level settings (Settings -> Plugins)
+# ---------------------------------------------------------------------------
+[[setting]]
+key     = "workshop_dir"
+type    = "string"
+label   = "Workshop content directory"
+description = "Where Steam puts Wallpaper Engine workshop items (app 431960)."
+default = "~/.local/share/Steam/steamapps/workshop/content/431960"
+
+[[setting]]
+key     = "pause_mode"
+type    = "string"
+label   = "Auto-pause mode"
+description = "fullscreen = pause only when a workspace has a fullscreen window (default — right choice with transparent/blurred windows where the wallpaper stays visible); windows = pause while any window is open on the monitor's workspace; focus = pause while the focused window is on that monitor; never = don't auto-pause."
+default = "fullscreen"
+
+[[setting]]
+key     = "process_mode"
+type    = "string"
+label   = "Process mode"
+description = "single = one linux-wallpaperengine process drives all monitors (default, lighter on RAM/VRAM; pause is aggregated — windows mode pauses when every monitor is covered, focus/fullscreen when any triggers). per-monitor = one process per monitor with fully independent pause."
+default = "single"
+
+[[setting]]
+key     = "fps"
+type    = "int"
+label   = "FPS limit"
+default = 30
+min     = 5
+max     = 240
+
+[[setting]]
+key     = "mute_audio"
+type    = "bool"
+label   = "Mute wallpaper audio"
+default = true
+
+[[setting]]
+key     = "volume"
+type    = "int"
+label   = "Volume (when not muted)"
+default = 50
+min     = 0
+max     = 100
+
+[[setting]]
+key     = "scaling"
+type    = "string"
+label   = "Scaling mode"
+description = "default, stretch, fit or fill."
+default = "default"
+
+[[setting]]
+key     = "autorestore"
+type    = "bool"
+label   = "Restore wallpapers on login / crash"
+description = "The bar widget respawns saved wallpapers if their process is gone."
+default = true
+
+[[setting]]
+key     = "extra_args"
+type    = "string"
+label   = "Extra CLI arguments"
+description = "Passed verbatim to linux-wallpaperengine (e.g. --disable-mouse --no-fullscreen-pause)."
+default = ""
+
+# ---------------------------------------------------------------------------
+# The GUI panel
+# ---------------------------------------------------------------------------
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 520
+height    = 660
+placement = "floating"
+position  = "center"
+open_near_click = true
+
+# ---------------------------------------------------------------------------
+# Bar widget — REQUIRED: it is the supervisor that auto-pauses and restores
+# ---------------------------------------------------------------------------
+[[widget]]
+id    = "bar"
+entry = "widget.luau"

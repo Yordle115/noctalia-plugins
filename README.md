@@ -23,6 +23,13 @@ favourites and playlists, transport controls, now-playing bar. Streams via
 **Requires** `yt-dlp`, `mpv`, and `socat` on `PATH`. See
 [`music-yt/README.md`](music-yt/README.md) for setup, wiring, and how it works.
 
+### Wallpaper Engine — `yordle/wallpaper-engine`
+Frontend for `linux-wallpaperengine`: browse Steam Workshop wallpapers with
+previews, assign per monitor, auto-pause on fullscreen — or whenever windows
+are open/focused (near-zero CPU/GPU while paused) — restore on login.
+**Requires** `linux-wallpaperengine` and Hyprland. See
+[`wallpaper-engine/README.md`](wallpaper-engine/README.md).
+
 ### Prayer Times — `yordle/prayer-times`
 Next-prayer countdown on the bar with a notification at adhan time; the panel
 shows the Hijri date and the day's prayer table. Defaults to Doha, Qatar
