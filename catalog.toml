@@ -13,7 +13,7 @@ tags         = ["music", "youtube", "yt-dlp", "mpv"]
 [[plugin]]
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.3.1"
+version      = "0.3.2"
 author       = "yordle"
 license      = "MIT"
 icon         = "photo"

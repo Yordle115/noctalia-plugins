@@ -1,5 +1,5 @@
 -- =============================================================================
---  panel.luau — Wallpaper Engine  v0.3.1
+--  panel.luau — Wallpaper Engine  v0.3.2
 --  Frontend for linux-wallpaperengine. Two-pane layout:
 --    LEFT  — paginated wallpaper list (no scrolling/searching required;
 --            filter box optional) with thumbnails
@@ -56,6 +56,7 @@ local state = {
   runtime    = {},    -- monitor name -> { id, paused } (live, from the widget)
   rtRaw      = "",
   engineBg   = nil,   -- does this engine build support --bg? nil = not probed
+  assets     = nil,   -- Wallpaper Engine assets dir; nil = not probed, "" = missing
   busy       = false,
   status     = "",
 }
@@ -97,8 +98,9 @@ local function loadState(cb)
       state.assigned = type(st.monitors) == "table" and st.monitors or {}
       state.manual = tostring(st.manual or "")
       state.ov = type(st.settings) == "table" and st.settings or {}
-      if type(st.engine) == "table" and type(st.engine.bg) == "boolean" then
-        state.engineBg = st.engine.bg
+      if type(st.engine) == "table" then
+        if type(st.engine.bg) == "boolean" then state.engineBg = st.engine.bg end
+        if type(st.engine.assets) == "string" then state.assets = st.engine.assets end
       end
     end
     if cb then cb() end
@@ -107,7 +109,9 @@ end
 
 local function saveState()
   local payload = { monitors = state.assigned, manual = state.manual, settings = state.ov }
-  if state.engineBg ~= nil then payload.engine = { bg = state.engineBg } end
+  if state.engineBg ~= nil or state.assets ~= nil then
+    payload.engine = { bg = state.engineBg, assets = state.assets }
+  end
   local json = noctalia.json.encode(payload)
   noctalia.runAsync("mkdir -p " .. sq(DATA_DIR) .. "; printf '%s' " .. sq(json) .. " > " .. sq(STATE_FILE), nil)
 end
@@ -122,6 +126,32 @@ local function detectEngine(cb)
   end
   noctalia.runAsync("linux-wallpaperengine --help 2>&1 | head -c 4000", function(res)
     state.engineBg = ((res.stdout or ""):find("%-%-bg") ~= nil)
+    saveState()
+    cb()
+  end)
+end
+
+-- Find Wallpaper Engine's proprietary "assets" folder. It ships with the
+-- Wallpaper Engine STEAM APP (steamapps/common/wallpaper_engine/assets),
+-- NOT with linux-wallpaperengine — distro/nix packages don't bundle it, and
+-- without it the engine exits immediately ("Cannot find a valid assets
+-- folder"). Probed once and persisted; the refresh button re-probes.
+local function detectAssets(cb)
+  if state.assets ~= nil then cb(); return end
+  local c = cfg()
+  local cands = {}
+  local explicit = noctalia.string.trim(tostring(getCfg("assets_dir") or ""))
+  if explicit ~= "" then cands[#cands + 1] = noctalia.expandPath(explicit) end
+  -- the workshop dir sits in the same steamapps as the app's assets
+  cands[#cands + 1] = c.dir:gsub("/workshop/content/431960/?$", "") .. "/common/wallpaper_engine/assets"
+  cands[#cands + 1] = noctalia.expandPath("~/.local/share/Steam/steamapps/common/wallpaper_engine/assets")
+  cands[#cands + 1] = noctalia.expandPath("~/.steam/steam/steamapps/common/wallpaper_engine/assets")
+  local sh = ""
+  for _, p in ipairs(cands) do
+    sh = sh .. "[ -d " .. sq(p) .. " ] && { printf '%s' " .. sq(p) .. "; exit 0; }; "
+  end
+  noctalia.runAsync(sh .. "true", function(res)
+    state.assets = noctalia.string.trim(res.stdout or "")
     saveState()
     cb()
   end)
@@ -216,6 +246,9 @@ local function commonFlags()
   if c.scaling ~= "" and c.scaling ~= "default" then
     f = f .. " --scaling " .. sq(c.scaling)
   end
+  if state.assets and state.assets ~= "" then
+    f = f .. " --assets-dir " .. sq(state.assets)
+  end
   if c.extra ~= "" then f = f .. " " .. c.extra end
   return f
 end
@@ -309,8 +342,8 @@ local function applyWallpaper(wp, mons)
     render()
     return
   end
-  if state.engineBg == nil then
-    detectEngine(function() applyWallpaper(wp, mons) end)
+  if state.engineBg == nil or state.assets == nil then
+    detectEngine(function() detectAssets(function() applyWallpaper(wp, mons) end) end)
     return
   end
   for _, mon in ipairs(mons) do
@@ -529,6 +562,12 @@ local function rightPane()
       fontSize = 9, color = "on_surface_variant",
     })
   end
+  if state.assets == "" then
+    kids[#kids + 1] = ui.label({
+      text = "⚠ Wallpaper Engine assets not found — wallpapers can't render. Install the Wallpaper Engine app in Steam (its steamapps/common/wallpaper_engine/assets folder is required), or set the assets directory in settings, then hit refresh.",
+      fontSize = 10, color = "on_surface_variant", maxLines = 4,
+    })
+  end
 
   return ui.column({ gap = 6, width = 320, align = "stretch" }, kids)
 end
@@ -563,7 +602,9 @@ function onOpen()
   state.status = ""
   loadState(function()
     detectEngine(function()
-      loadMonitors(function() render() end)
+      detectAssets(function()
+        loadMonitors(function() render() end)
+      end)
     end)
   end)
   scanWallpapers()
@@ -577,7 +618,19 @@ function update()
 end
 
 function onClose() panel.close() end
-function onRescan() loadMonitors(function() render() end); scanWallpapers() end
+
+-- refresh also re-probes the engine capabilities and the assets folder
+-- (e.g. after installing Wallpaper Engine in Steam)
+function onRescan()
+  state.engineBg = nil
+  state.assets = nil
+  detectEngine(function()
+    detectAssets(function()
+      loadMonitors(function() render() end)
+    end)
+  end)
+  scanWallpapers()
+end
 function onFilter(text)
   state.filter = noctalia.string.trim(text or ""):lower()
   state.page = 1
