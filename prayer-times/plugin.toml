@@ -1,0 +1,73 @@
+id           = "yordle/prayer-times"
+name         = "Prayer Times"
+version      = "0.1.0"
+min_noctalia = "5.0.0"
+author       = "yordle"
+license      = "MIT"
+icon         = "building-mosque"
+description  = "Next-prayer countdown on the bar with a notification at adhan time; the panel shows the Hijri date and the day's prayer table. Defaults to Doha, Qatar (AlAdhan API, cached daily)."
+tags         = ["prayer", "islam", "adhan", "hijri", "qatar"]
+
+# ---------------------------------------------------------------------------
+# Plugin-level settings (Settings -> Plugins)
+# ---------------------------------------------------------------------------
+[[setting]]
+key     = "city"
+type    = "string"
+label   = "City"
+description = "City name passed to the AlAdhan API."
+default = "Doha"
+
+[[setting]]
+key     = "country"
+type    = "string"
+label   = "Country"
+description = "Country name passed to the AlAdhan API."
+default = "Qatar"
+
+[[setting]]
+key     = "method"
+type    = "int"
+label   = "Calculation method (AlAdhan id)"
+description = "10 = Qatar. Others: 4 = Umm Al-Qura, 3 = Muslim World League, 8 = Gulf Region — see aladhan.com/calculation-methods."
+default = 10
+min     = 0
+max     = 23
+
+[[setting]]
+key     = "twelve_hour"
+type    = "bool"
+label   = "12-hour clock"
+description = "Show times as 5:07 PM instead of 17:07."
+default = true
+
+# ---------------------------------------------------------------------------
+# The GUI panel
+# ---------------------------------------------------------------------------
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 360
+height    = 470
+placement = "floating"
+position  = "center"
+open_near_click = true
+
+# ---------------------------------------------------------------------------
+# Bar widget
+# ---------------------------------------------------------------------------
+[[widget]]
+id    = "bar"
+entry = "widget.luau"
+
+  [[widget.setting]]
+  key     = "show_countdown"
+  type    = "bool"
+  label   = "Show countdown on bar"
+  default = true
+
+  [[widget.setting]]
+  key     = "notify"
+  type    = "bool"
+  label   = "Notify at prayer time (adhan)"
+  default = true
