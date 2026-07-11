@@ -32,6 +32,14 @@ local function cfg()
     h12     = getCfg("twelve_hour") ~= false,
     lat     = tostring(getCfg("latitude") or "25.2854"),
     lon     = tostring(getCfg("longitude") or "51.5310"),
+    -- minutes from adhan to iqamah, per prayer
+    iq = {
+      Fajr    = tonumber(getCfg("iqamah_fajr")) or 25,
+      Dhuhr   = tonumber(getCfg("iqamah_dhuhr")) or 20,
+      Asr     = tonumber(getCfg("iqamah_asr")) or 25,
+      Maghrib = tonumber(getCfg("iqamah_maghrib")) or 10,
+      Isha    = tonumber(getCfg("iqamah_isha")) or 20,
+    },
   }
 end
 
@@ -41,6 +49,7 @@ local notifyAdhan   = barWidget.getConfig("notify") ~= false
 local cached      = nil   -- parsed { date, timings, hijri, readable }
 local fetching    = false
 local lastCurrent = nil   -- last "current prayer" seen ("-" before Fajr)
+local lastIqamah  = nil   -- prayer whose iqamah window we were in last tick
 
 -- ---------- time helpers ----------
 local function toMin(hhmm)
@@ -82,6 +91,19 @@ local function currentPrayer(timings, nowMin)
     if m and m <= nowMin then cur = name end
   end
   return cur
+end
+
+-- If we're inside a prayer's adhan→iqamah window, return that prayer and the
+-- minutes remaining until iqamah (the bar countdown switches to this at adhan).
+local function iqamahWindow(timings, nowMin, iq)
+  for _, name in ipairs(PRAYERS) do
+    local m = toMin(timings[name])
+    local off = iq[name] or 0
+    if m and off > 0 and nowMin >= m and nowMin < m + off then
+      return name, (m + off) - nowMin
+    end
+  end
+  return nil
 end
 
 -- ---------- data ----------
@@ -202,7 +224,17 @@ function update()
       lastCurrent = cur
     end
 
-    if showCountdown then
+    -- iqamah: after adhan the countdown switches to the iqamah window; when
+    -- the window closes, that IS iqamah time — notify
+    local iqName, iqMins = iqamahWindow(data.timings, nowMin, c.iq)
+    if lastIqamah and iqName ~= lastIqamah and notifyAdhan then
+      noctalia.notify("Prayer Times", "Iqamah for " .. lastIqamah)
+    end
+    lastIqamah = iqName
+
+    if iqName then
+      barWidget.setText("Iqamah · " .. fmtRemaining(iqMins))
+    elseif showCountdown then
       barWidget.setText(name .. " · " .. fmtRemaining(mins))
     else
       barWidget.setText(name .. " " .. fmtTime(data.timings[name], c.h12))
@@ -215,6 +247,9 @@ function update()
     end
     if h.day ~= "" and h.month ~= "" then
       lines[#lines + 1] = h.day .. " " .. h.month .. " " .. h.year .. " AH"
+    end
+    if iqName then
+      lines[#lines + 1] = "Iqamah for " .. iqName .. " in " .. fmtRemaining(iqMins)
     end
     for _, p in ipairs({ "Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha" }) do
       lines[#lines + 1] = p .. "  " .. fmtTime(data.timings[p], c.h12)

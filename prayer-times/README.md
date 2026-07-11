@@ -4,11 +4,18 @@ Islamic prayer times for Noctalia v5, defaulting to **Doha, Qatar**.
 
 Two entry points:
 - **Bar widget** — the next prayer and a live countdown (e.g. `Maghrib · 1h 23m`),
-  with a notification when adhan time arrives. Tooltip shows the Hijri date and
-  the full table. Click opens the panel; middle-click forces a re-fetch.
+  with a notification when adhan time arrives. When the adhan countdown hits 0
+  it switches to an **iqamah countdown** (`Iqamah · 8m`) and notifies again at
+  iqamah time. Tooltip shows the Hijri date and the full table. Click opens
+  the panel; middle-click forces a re-fetch.
 - **Panel** — the Hijri date (English + Arabic month) and the day's prayer
-  table (Fajr, Sunrise, Dhuhr, Asr, Maghrib, Isha) with the next prayer
-  highlighted and a countdown.
+  table (Fajr, Sunrise, Dhuhr, Asr, Maghrib, Isha) with each prayer's iqamah
+  time, the current/next prayer highlighted, and the same adhan/iqamah
+  countdown.
+
+Iqamah offsets (minutes after adhan, each a setting): **Fajr 25 · Dhuhr 20 ·
+Asr 25 · Maghrib 10 · Isha 20**. Set an offset to 0 to disable that prayer's
+iqamah window.
 
 Times come from the free [AlAdhan API](https://aladhan.com/prayer-times-api)
 using Qatar's official calculation method (`method=10`) — no API key. The
@@ -49,7 +56,9 @@ hl.bind("SUPER + P", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/prayer-ti
 - **Calculation method** — AlAdhan method id (default `10` = Qatar; `4` =
   Umm Al-Qura, `3` = Muslim World League, `8` = Gulf Region).
 - **12-hour clock** — `5:07 PM` vs `17:07`.
-- **Bar widget**: countdown on/off, adhan notification on/off.
+- **Iqamah offsets** — minutes from adhan to iqamah per prayer
+  (defaults 25/20/25/10/20; 0 disables).
+- **Bar widget**: countdown on/off, adhan+iqamah notifications on/off.
 
 ---
 

@@ -1,5 +1,5 @@
 -- =============================================================================
---  panel.luau — Prayer Times  v0.1.0
+--  panel.luau — Prayer Times  v0.3.0
 --  Hijri date + the day's prayer table, with a next-prayer countdown.
 --  Data from the AlAdhan API (defaults: Doha, Qatar — method 10), fetched
 --  once per day via curl and cached in ~/.config/noctalia-prayers/today.json
@@ -33,6 +33,14 @@ local function cfg()
     h12     = getCfg("twelve_hour") ~= false,
     lat     = tostring(getCfg("latitude") or "25.2854"),
     lon     = tostring(getCfg("longitude") or "51.5310"),
+    -- minutes from adhan to iqamah, per prayer
+    iq = {
+      Fajr    = tonumber(getCfg("iqamah_fajr")) or 25,
+      Dhuhr   = tonumber(getCfg("iqamah_dhuhr")) or 20,
+      Asr     = tonumber(getCfg("iqamah_asr")) or 25,
+      Maghrib = tonumber(getCfg("iqamah_maghrib")) or 10,
+      Isha    = tonumber(getCfg("iqamah_isha")) or 20,
+    },
   }
 end
 
@@ -83,6 +91,31 @@ local function nextPrayer(timings, nowMin)
   end
   local fajr = toMin(timings.Fajr) or 0
   return "Fajr", (24 * 60 - nowMin) + fajr
+end
+
+-- If we're inside a prayer's adhan→iqamah window, return that prayer and the
+-- minutes remaining until iqamah (the countdown switches to this at adhan).
+local function iqamahWindow(timings, nowMin, iq)
+  for _, name in ipairs(PRAYERS) do
+    local m = toMin(timings[name])
+    local off = iq[name] or 0
+    if m and off > 0 and nowMin >= m and nowMin < m + off then
+      return name, (m + off) - nowMin
+    end
+  end
+  return nil
+end
+
+-- minutes-of-day -> clock text (for computed iqamah times)
+local function fmtMinutes(totalMin, h12)
+  totalMin = totalMin % (24 * 60)
+  local h = math.floor(totalMin / 60)
+  local mm = string.format("%02d", totalMin % 60)
+  if not h12 then return string.format("%02d:%s", h, mm) end
+  local suffix = h >= 12 and "PM" or "AM"
+  local hh = h % 12
+  if hh == 0 then hh = 12 end
+  return hh .. ":" .. mm .. " " .. suffix
 end
 
 -- ---------- data ----------
@@ -267,21 +300,40 @@ function render()
     end
     kids[#kids + 1] = ui.column({ gap = 2, paddingV = 6, align = "center" }, card)
 
-    -- next-prayer countdown
-    local name, mins = nextPrayer(d.timings, nowMinutes())
+    -- countdown: next adhan — or iqamah while inside the adhan→iqamah window
+    local nowMin = nowMinutes()
+    local name, mins = nextPrayer(d.timings, nowMin)
+    local iqName, iqMins = iqamahWindow(d.timings, nowMin, c.iq)
     kids[#kids + 1] = ui.row({ gap = 6, align = "center", justify = "center", paddingV = 4 }, {
       ui.glyph({ name = "clock", size = 15, color = "primary" }),
-      ui.label({ text = name .. " in " .. fmtRemaining(mins), fontSize = 14, fontWeight = "bold", color = "primary" }),
+      ui.label({
+        text = iqName
+          and ("Iqamah for " .. iqName .. " in " .. fmtRemaining(iqMins))
+          or (name .. " in " .. fmtRemaining(mins)),
+        fontSize = 14, fontWeight = "bold", color = "primary",
+      }),
     })
     kids[#kids + 1] = ui.separator({ spacing = 4 })
 
-    -- prayer times table (Sunrise dimmed — it's informational, not a prayer)
+    -- prayer times table (Sunrise dimmed; prayers also show their iqamah time)
+    local hlName = iqName or name
     for _, rowName in ipairs(TABLE_ROWS) do
-      local isNext = (rowName == name)
-      local color = isNext and "primary" or (rowName == "Sunrise" and "on_surface_variant" or "on_surface")
+      local isHl = (rowName == hlName)
+      local color = isHl and "primary" or (rowName == "Sunrise" and "on_surface_variant" or "on_surface")
+      local right = {
+        ui.label({ text = fmtTime(d.timings[rowName], c.h12), fontSize = 13, color = color, fontWeight = isHl and "bold" or nil }),
+      }
+      local off = c.iq[rowName] or 0
+      local adhanMin = toMin(d.timings[rowName])
+      if off > 0 and adhanMin then
+        table.insert(right, 1, ui.label({
+          text = "iq " .. fmtMinutes(adhanMin + off, c.h12),
+          fontSize = 10, color = "on_surface_variant",
+        }))
+      end
       kids[#kids + 1] = ui.row({ align = "center", justify = "space_between", paddingV = 3, key = "pt-" .. rowName }, {
-        ui.label({ text = rowName, fontSize = 13, color = color, fontWeight = isNext and "bold" or nil }),
-        ui.label({ text = fmtTime(d.timings[rowName], c.h12), fontSize = 13, color = color, fontWeight = isNext and "bold" or nil }),
+        ui.label({ text = rowName, fontSize = 13, color = color, fontWeight = isHl and "bold" or nil }),
+        ui.row({ gap = 8, align = "center" }, right),
       })
     end
   end
