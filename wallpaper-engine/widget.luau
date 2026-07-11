@@ -45,14 +45,24 @@ local function getCfg(key)
   return nil
 end
 
+-- live settings overrides from state.json ("settings", written by the panel);
+-- refreshed every tick before cfg() is consulted — panel values win
+local ov = {}
+
+local function ovBool(key, fallback)
+  local v = ov[key]
+  if type(v) == "boolean" then return v end
+  return fallback
+end
+
 local function cfg()
   return {
-    fps       = tonumber(getCfg("fps")) or 30,
-    mute      = getCfg("mute_audio") ~= false,
-    volume    = tonumber(getCfg("volume")) or 50,
-    scaling   = tostring(getCfg("scaling") or "default"),
+    fps       = tonumber(ov.fps) or tonumber(getCfg("fps")) or 30,
+    mute      = ovBool("mute", getCfg("mute_audio") ~= false),
+    volume    = tonumber(ov.volume) or tonumber(getCfg("volume")) or 50,
+    scaling   = tostring(ov.scaling or getCfg("scaling") or "default"),
     extra     = noctalia.string.trim(tostring(getCfg("extra_args") or "")),
-    pauseMode = tostring(getCfg("pause_mode") or "fullscreen"),
+    pauseMode = tostring(ov.pause_mode or getCfg("pause_mode") or "fullscreen"),
     procMode  = tostring(getCfg("process_mode") or "single"),
     restore   = getCfg("autorestore") ~= false,
   }
@@ -275,6 +285,7 @@ function update()
     if not ok or type(st) ~= "table" then st = {} end
     local desired = type(st.monitors) == "table" and st.monitors or {}
     local manual = tostring(st.manual or "")
+    ov = type(st.settings) == "table" and st.settings or {}
     local c = cfg()
 
     -- 2) what's actually running

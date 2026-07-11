@@ -1,7 +1,7 @@
 [[plugin]]
 id           = "yordle/music-yt"
 name         = "Music (YouTube + Local)"
-version      = "0.4.0"
+version      = "0.4.1"
 author       = "yordle"
 license      = "MIT"
 icon         = "music"
@@ -13,7 +13,7 @@ tags         = ["music", "youtube", "yt-dlp", "mpv"]
 [[plugin]]
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.2.1"
+version      = "0.3.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "photo"
@@ -25,7 +25,7 @@ tags         = ["wallpaper", "wallpaper-engine", "hyprland", "steam-workshop"]
 [[plugin]]
 id           = "yordle/prayer-times"
 name         = "Prayer Times"
-version      = "0.1.0"
+version      = "0.2.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "building-mosque"
@@ -37,7 +37,7 @@ tags         = ["prayer", "islam", "adhan", "hijri", "qatar"]
 [[plugin]]
 id           = "yordle/todo"
 name         = "To-Do"
-version      = "0.1.0"
+version      = "0.1.1"
 author       = "yordle"
 license      = "MIT"
 icon         = "checklist"
