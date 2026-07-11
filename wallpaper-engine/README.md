@@ -101,6 +101,20 @@ hl.bind("SUPER + W", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/wallpaper
 
 ---
 
+## Troubleshooting
+
+- Engine output is captured to `~/.config/noctalia-wpe/wpe.log` (fresh per
+  apply/restart). If a wallpaper doesn't come up, the panel status shows the
+  engine's last log line ("Engine exited — …"); the full log has the rest.
+- The panel probes `linux-wallpaperengine --help` once for `--bg` support.
+  Older builds without it get the legacy positional-id launch automatically
+  (one process per monitor; the right pane notes when this is active). To
+  re-probe after upgrading the engine, delete `~/.config/noctalia-wpe/state.json`
+  or just keep using it — the modern syntax is preferred once detected.
+- Test by hand with exactly what the plugin runs:
+  `linux-wallpaperengine --screen-root <MON> --bg <ID> --fps 30 --silent`
+  (or `linux-wallpaperengine --screen-root <MON> <ID>` on older builds).
+
 ## Known rough edges (alpha API)
 
 - Auto-pause reacts within ~1 second (the widget's poll interval), not

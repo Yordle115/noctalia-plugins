@@ -31,6 +31,7 @@
 local DATA_DIR     = noctalia.expandPath("~/.config/noctalia-wpe")
 local STATE_FILE   = DATA_DIR .. "/state.json"
 local RUNTIME_FILE = "/tmp/noctalia-wpe-runtime.json"
+local LOG_FILE     = DATA_DIR .. "/wpe.log"   -- engine stdout/stderr
 
 -- ---------- shell quoting ----------
 local function sq(s)
@@ -48,6 +49,10 @@ end
 -- live settings overrides from state.json ("settings", written by the panel);
 -- refreshed every tick before cfg() is consulted — panel values win
 local ov = {}
+
+-- does the engine build support --bg? (probed by the panel, persisted in
+-- state.json "engine"; default to modern syntax until told otherwise)
+local engBg = true
 
 local function ovBool(key, fallback)
   local v = ov[key]
@@ -91,8 +96,13 @@ local function commonFlags()
 end
 
 local function launchCmd(mon, wpId)
-  return "setsid linux-wallpaperengine --screen-root " .. sq(mon) .. " --bg " .. sq(wpId)
-    .. commonFlags() .. " >/dev/null 2>&1 &"
+  local cmd = "setsid linux-wallpaperengine --screen-root " .. sq(mon)
+  if engBg then
+    cmd = cmd .. " --bg " .. sq(wpId) .. commonFlags()
+  else
+    cmd = cmd .. commonFlags() .. " " .. sq(wpId)   -- legacy: positional id last
+  end
+  return cmd .. " >> " .. sq(LOG_FILE) .. " 2>&1 &"
 end
 
 local function singleLaunchCmd(list)
@@ -101,7 +111,7 @@ local function singleLaunchCmd(list)
   for _, a in ipairs(list) do
     cmd = cmd .. " --screen-root " .. sq(a.mon) .. " --bg " .. sq(a.id)
   end
-  return cmd .. commonFlags() .. " >/dev/null 2>&1 &"
+  return cmd .. commonFlags() .. " >> " .. sq(LOG_FILE) .. " 2>&1 &"
 end
 
 local function killPattern(mon)
@@ -119,9 +129,13 @@ local function parseRunning(out)
       for mon, bg in line:gmatch("%-%-screen%-root (%S+) %-%-bg (%S+)") do
         running[mon] = { pid = pid, id = bg }
       end
-      -- manually-launched form without a --bg pair: still track it
+      -- legacy form: no --bg pair, wallpaper id is the last positional arg
       for mon in line:gmatch("%-%-screen%-root (%S+)") do
-        if not running[mon] then running[mon] = { pid = pid, id = "" } end
+        if not running[mon] then
+          local tailId = line:match("%s(%S+)%s*$")
+          if tailId and (tailId:sub(1, 1) == "-" or tailId == mon) then tailId = nil end
+          running[mon] = { pid = pid, id = tailId or "" }
+        end
       end
     end
   end
@@ -202,7 +216,7 @@ local function restoreCmds(c, desired, running, presentMons)
     return ""
   end
 
-  if c.procMode == "per-monitor" then
+  if c.procMode == "per-monitor" or not engBg then
     local cmds = ""
     for _, mon in ipairs(names) do
       if running[mon] and running[mon].id == wanted[mon] then
@@ -286,6 +300,8 @@ function update()
     local desired = type(st.monitors) == "table" and st.monitors or {}
     local manual = tostring(st.manual or "")
     ov = type(st.settings) == "table" and st.settings or {}
+    local eng = type(st.engine) == "table" and st.engine or {}
+    engBg = (eng.bg ~= false)
     local c = cfg()
 
     -- 2) what's actually running
