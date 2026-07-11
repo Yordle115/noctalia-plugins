@@ -1,6 +1,6 @@
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.3.0"
+version      = "0.3.1"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"

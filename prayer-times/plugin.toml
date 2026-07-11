@@ -1,6 +1,6 @@
 id           = "yordle/prayer-times"
 name         = "Prayer Times"
-version      = "0.3.0"
+version      = "0.4.0"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
@@ -54,6 +54,57 @@ type    = "bool"
 label   = "12-hour clock"
 description = "Show times as 5:07 PM instead of 17:07."
 default = true
+
+# Per-prayer adhan correction in minutes (+/-), to align with a local
+# timetable (e.g. QatarPrayer) when the API drifts by a few minutes.
+# Applied live to the countdown, table, notifications and iqamah windows.
+[[setting]]
+key     = "tune_fajr"
+type    = "int"
+label   = "Adhan offset: Fajr (min)"
+default = 0
+min     = -30
+max     = 30
+
+[[setting]]
+key     = "tune_sunrise"
+type    = "int"
+label   = "Adhan offset: Sunrise (min)"
+default = 0
+min     = -30
+max     = 30
+
+[[setting]]
+key     = "tune_dhuhr"
+type    = "int"
+label   = "Adhan offset: Dhuhr (min)"
+default = 0
+min     = -30
+max     = 30
+
+[[setting]]
+key     = "tune_asr"
+type    = "int"
+label   = "Adhan offset: Asr (min)"
+default = 0
+min     = -30
+max     = 30
+
+[[setting]]
+key     = "tune_maghrib"
+type    = "int"
+label   = "Adhan offset: Maghrib (min)"
+default = 0
+min     = -30
+max     = 30
+
+[[setting]]
+key     = "tune_isha"
+type    = "int"
+label   = "Adhan offset: Isha (min)"
+default = 0
+min     = -30
+max     = 30
 
 # Minutes from adhan to iqamah, per prayer (0 disables that prayer's window)
 [[setting]]

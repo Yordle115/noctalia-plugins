@@ -40,6 +40,15 @@ local function cfg()
       Maghrib = tonumber(getCfg("iqamah_maghrib")) or 10,
       Isha    = tonumber(getCfg("iqamah_isha")) or 20,
     },
+    -- per-prayer adhan correction in minutes (to match a local timetable)
+    tune = {
+      Fajr    = tonumber(getCfg("tune_fajr")) or 0,
+      Sunrise = tonumber(getCfg("tune_sunrise")) or 0,
+      Dhuhr   = tonumber(getCfg("tune_dhuhr")) or 0,
+      Asr     = tonumber(getCfg("tune_asr")) or 0,
+      Maghrib = tonumber(getCfg("tune_maghrib")) or 0,
+      Isha    = tonumber(getCfg("tune_isha")) or 0,
+    },
   }
 end
 
@@ -91,6 +100,20 @@ local function currentPrayer(timings, nowMin)
     if m and m <= nowMin then cur = name end
   end
   return cur
+end
+
+-- Apply the per-prayer adhan corrections to the raw API timings. Applied at
+-- use time (not cache time) so changing an offset takes effect immediately.
+local function tuneTimings(timings, tune)
+  local out = {}
+  for _, name in ipairs({ "Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha" }) do
+    local m = toMin(timings[name])
+    if m then
+      m = (m + (tune[name] or 0)) % (24 * 60)
+      out[name] = string.format("%02d:%02d", math.floor(m / 60), m % 60)
+    end
+  end
+  return out
 end
 
 -- If we're inside a prayer's adhan→iqamah window, return that prayer and the
@@ -212,21 +235,22 @@ function update()
       return
     end
     local c = cfg()
+    local T = tuneTimings(data.timings, c.tune)
     local nowMin = (tonumber(noctalia.formatTime("%H")) or 0) * 60 + (tonumber(noctalia.formatTime("%M")) or 0)
-    local name, mins = nextPrayer(data.timings, nowMin)
+    local name, mins = nextPrayer(T, nowMin)
 
     -- adhan notification when a prayer time is reached (skip first tick)
-    local cur = currentPrayer(data.timings, nowMin)
+    local cur = currentPrayer(T, nowMin)
     if cur ~= lastCurrent then
       if notifyAdhan and lastCurrent ~= nil and cur ~= "-" then
-        noctalia.notify("Prayer Times", "It's time for " .. cur .. " — " .. fmtTime(data.timings[cur], c.h12))
+        noctalia.notify("Prayer Times", "It's time for " .. cur .. " — " .. fmtTime(T[cur], c.h12))
       end
       lastCurrent = cur
     end
 
     -- iqamah: after adhan the countdown switches to the iqamah window; when
     -- the window closes, that IS iqamah time — notify
-    local iqName, iqMins = iqamahWindow(data.timings, nowMin, c.iq)
+    local iqName, iqMins = iqamahWindow(T, nowMin, c.iq)
     if lastIqamah and iqName ~= lastIqamah and notifyAdhan then
       noctalia.notify("Prayer Times", "Iqamah for " .. lastIqamah)
     end
@@ -237,7 +261,7 @@ function update()
     elseif showCountdown then
       barWidget.setText(name .. " · " .. fmtRemaining(mins))
     else
-      barWidget.setText(name .. " " .. fmtTime(data.timings[name], c.h12))
+      barWidget.setText(name .. " " .. fmtTime(T[name], c.h12))
     end
 
     local h = data.hijri
@@ -252,7 +276,7 @@ function update()
       lines[#lines + 1] = "Iqamah for " .. iqName .. " in " .. fmtRemaining(iqMins)
     end
     for _, p in ipairs({ "Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha" }) do
-      lines[#lines + 1] = p .. "  " .. fmtTime(data.timings[p], c.h12)
+      lines[#lines + 1] = p .. "  " .. fmtTime(T[p], c.h12)
     end
     barWidget.setTooltip(table.concat(lines, "\n"))
   end)

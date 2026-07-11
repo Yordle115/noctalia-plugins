@@ -1,5 +1,5 @@
 -- =============================================================================
---  panel.luau — Wallpaper Engine  v0.3.0
+--  panel.luau — Wallpaper Engine  v0.3.1
 --  Frontend for linux-wallpaperengine. Two-pane layout:
 --    LEFT  — paginated wallpaper list (no scrolling/searching required;
 --            filter box optional) with thumbnails
@@ -28,6 +28,7 @@
 local DATA_DIR     = noctalia.expandPath("~/.config/noctalia-wpe")
 local STATE_FILE   = DATA_DIR .. "/state.json"
 local RUNTIME_FILE = "/tmp/noctalia-wpe-runtime.json"   -- written by the widget
+local LOG_FILE     = DATA_DIR .. "/wpe.log"             -- engine stdout/stderr
 local PAGE         = 10   -- wallpapers per page (= row handler pool size)
 local MON_POOL     = 8    -- monitor chip handler pool
 
@@ -54,6 +55,7 @@ local state = {
   ov         = {},    -- playback settings overrides (persisted in state.json)
   runtime    = {},    -- monitor name -> { id, paused } (live, from the widget)
   rtRaw      = "",
+  engineBg   = nil,   -- does this engine build support --bg? nil = not probed
   busy       = false,
   status     = "",
 }
@@ -95,14 +97,34 @@ local function loadState(cb)
       state.assigned = type(st.monitors) == "table" and st.monitors or {}
       state.manual = tostring(st.manual or "")
       state.ov = type(st.settings) == "table" and st.settings or {}
+      if type(st.engine) == "table" and type(st.engine.bg) == "boolean" then
+        state.engineBg = st.engine.bg
+      end
     end
     if cb then cb() end
   end)
 end
 
 local function saveState()
-  local json = noctalia.json.encode({ monitors = state.assigned, manual = state.manual, settings = state.ov })
+  local payload = { monitors = state.assigned, manual = state.manual, settings = state.ov }
+  if state.engineBg ~= nil then payload.engine = { bg = state.engineBg } end
+  local json = noctalia.json.encode(payload)
   noctalia.runAsync("mkdir -p " .. sq(DATA_DIR) .. "; printf '%s' " .. sq(json) .. " > " .. sq(STATE_FILE), nil)
+end
+
+-- Probe the engine's CLI once: newer builds take "--bg <id>" after each
+-- --screen-root; older ones take a single positional id (which also means
+-- one process per monitor — no shared process). Persisted for the widget.
+local function detectEngine(cb)
+  if state.engineBg ~= nil or not noctalia.commandExists("linux-wallpaperengine") then
+    cb()
+    return
+  end
+  noctalia.runAsync("linux-wallpaperengine --help 2>&1 | head -c 4000", function(res)
+    state.engineBg = ((res.stdout or ""):find("%-%-bg") ~= nil)
+    saveState()
+    cb()
+  end)
 end
 
 -- ---------- monitors / wallpapers ----------
@@ -198,20 +220,27 @@ local function commonFlags()
   return f
 end
 
--- per-monitor mode: one process for one monitor
+-- per-monitor mode: one process for one monitor (legacy builds without --bg
+-- take the wallpaper id as a positional argument, last)
 local function launchCmd(mon, wpId)
-  return "setsid linux-wallpaperengine --screen-root " .. sq(mon) .. " --bg " .. sq(wpId)
-    .. commonFlags() .. " >/dev/null 2>&1 &"
+  local cmd = "setsid linux-wallpaperengine --screen-root " .. sq(mon)
+  if state.engineBg == false then
+    cmd = cmd .. commonFlags() .. " " .. sq(wpId)
+  else
+    cmd = cmd .. " --bg " .. sq(wpId) .. commonFlags()
+  end
+  return cmd .. " >> " .. sq(LOG_FILE) .. " 2>&1 &"
 end
 
--- single mode: one process carrying every assignment ({ {mon, id}, ... })
+-- single mode: one process carrying every assignment ({ {mon, id}, ... });
+-- requires --bg support — callers fall back to per-monitor without it
 local function singleLaunchCmd(list)
   if #list == 0 then return "true" end
   local cmd = "setsid linux-wallpaperengine"
   for _, a in ipairs(list) do
     cmd = cmd .. " --screen-root " .. sq(a.mon) .. " --bg " .. sq(a.id)
   end
-  return cmd .. commonFlags() .. " >/dev/null 2>&1 &"
+  return cmd .. commonFlags() .. " >> " .. sq(LOG_FILE) .. " 2>&1 &"
 end
 
 local function killPattern(mon)
@@ -235,12 +264,31 @@ local function relaunchAllCmd()
   local c = cfg()
   local list = currentAssignedList()
   if #list == 0 then return nil end
-  if c.procMode == "per-monitor" then
+  -- fresh log per relaunch so failures are easy to read
+  local kill = "pkill -f linux-wallpaperengine 2>/dev/null; sleep 0.3; : > " .. sq(LOG_FILE) .. "; "
+  if c.procMode == "per-monitor" or state.engineBg == false then
     local spawns = ""
     for _, a in ipairs(list) do spawns = spawns .. launchCmd(a.mon, a.id) .. " " end
-    return "pkill -f linux-wallpaperengine 2>/dev/null; sleep 0.3; " .. spawns
+    return kill .. spawns
   end
-  return "pkill -f linux-wallpaperengine 2>/dev/null; sleep 0.3; " .. singleLaunchCmd(list)
+  return kill .. singleLaunchCmd(list)
+end
+
+-- After launching, confirm the engine actually survived; if it died, surface
+-- the last log line so the failure is visible in the panel.
+local function verifyRunning(successText)
+  noctalia.runAsync("sleep 1.5; pgrep -f linux-wallpaperengine >/dev/null 2>&1 && echo ok || echo dead", function(chk)
+    if (chk.stdout or ""):match("dead") then
+      noctalia.runAsync("tail -n 6 " .. sq(LOG_FILE) .. " 2>/dev/null | tr -d '\\r'", function(t)
+        local last = noctalia.string.trim(t.stdout or ""):match("([^\n]+)%s*$") or "no output captured"
+        state.status = "Engine exited — " .. last:sub(1, 120) .. "  (log: ~/.config/noctalia-wpe/wpe.log)"
+        render()
+      end)
+    else
+      state.status = successText
+      render()
+    end
+  end)
 end
 
 local function targetMonitors()
@@ -261,6 +309,10 @@ local function applyWallpaper(wp, mons)
     render()
     return
   end
+  if state.engineBg == nil then
+    detectEngine(function() applyWallpaper(wp, mons) end)
+    return
+  end
   for _, mon in ipairs(mons) do
     state.assigned[mon] = { id = wp.id, title = wp.title }
   end
@@ -269,8 +321,7 @@ local function applyWallpaper(wp, mons)
   render()
   local cmd = relaunchAllCmd() or "true"
   noctalia.runAsync(cmd, function()
-    state.status = wp.title .. " → " .. table.concat(mons, ", ")
-    render()
+    verifyRunning(wp.title .. " → " .. table.concat(mons, ", "))
   end)
 end
 
@@ -472,6 +523,12 @@ local function rightPane()
       kids[#kids + 1] = ui.label({ text = txt, fontSize = 11, color = "on_surface_variant", maxLines = 1 })
     end
   end
+  if state.engineBg == false then
+    kids[#kids + 1] = ui.label({
+      text = "Engine build lacks --bg — using legacy per-monitor launch",
+      fontSize = 9, color = "on_surface_variant",
+    })
+  end
 
   return ui.column({ gap = 6, width = 320, align = "stretch" }, kids)
 end
@@ -505,7 +562,9 @@ function onOpen()
   panel.setWantsSecondTicks(true)
   state.status = ""
   loadState(function()
-    loadMonitors(function() render() end)
+    detectEngine(function()
+      loadMonitors(function() render() end)
+    end)
   end)
   scanWallpapers()
   readRuntime()
@@ -543,8 +602,7 @@ function onRestart()
   state.status = "Restarting wallpapers…"
   render()
   noctalia.runAsync(cmd, function()
-    state.status = "Restarted with current settings"
-    render()
+    verifyRunning("Restarted with current settings")
   end)
 end
 

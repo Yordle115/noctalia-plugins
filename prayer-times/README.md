@@ -56,6 +56,10 @@ hl.bind("SUPER + P", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/prayer-ti
 - **Calculation method** — AlAdhan method id (default `10` = Qatar; `4` =
   Umm Al-Qura, `3` = Muslim World League, `8` = Gulf Region).
 - **12-hour clock** — `5:07 PM` vs `17:07`.
+- **Adhan offsets** — per-prayer ±minutes correction if the API drifts from
+  your local timetable (e.g. QatarPrayer). Compare the panel's table against
+  the local one and set each prayer's offset; applies immediately to the
+  countdown, table, notifications and iqamah windows.
 - **Iqamah offsets** — minutes from adhan to iqamah per prayer
   (defaults 25/20/25/10/20; 0 disables).
 - **Bar widget**: countdown on/off, adhan+iqamah notifications on/off.

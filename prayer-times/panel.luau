@@ -1,5 +1,5 @@
 -- =============================================================================
---  panel.luau — Prayer Times  v0.3.0
+--  panel.luau — Prayer Times  v0.4.0
 --  Hijri date + the day's prayer table, with a next-prayer countdown.
 --  Data from the AlAdhan API (defaults: Doha, Qatar — method 10), fetched
 --  once per day via curl and cached in ~/.config/noctalia-prayers/today.json
@@ -40,6 +40,15 @@ local function cfg()
       Asr     = tonumber(getCfg("iqamah_asr")) or 25,
       Maghrib = tonumber(getCfg("iqamah_maghrib")) or 10,
       Isha    = tonumber(getCfg("iqamah_isha")) or 20,
+    },
+    -- per-prayer adhan correction in minutes (to match a local timetable)
+    tune = {
+      Fajr    = tonumber(getCfg("tune_fajr")) or 0,
+      Sunrise = tonumber(getCfg("tune_sunrise")) or 0,
+      Dhuhr   = tonumber(getCfg("tune_dhuhr")) or 0,
+      Asr     = tonumber(getCfg("tune_asr")) or 0,
+      Maghrib = tonumber(getCfg("tune_maghrib")) or 0,
+      Isha    = tonumber(getCfg("tune_isha")) or 0,
     },
   }
 end
@@ -104,6 +113,20 @@ local function iqamahWindow(timings, nowMin, iq)
     end
   end
   return nil
+end
+
+-- Apply the per-prayer adhan corrections to the raw API timings. Applied at
+-- use time (not cache time) so changing an offset takes effect immediately.
+local function tuneTimings(timings, tune)
+  local out = {}
+  for _, name in ipairs({ "Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha" }) do
+    local m = toMin(timings[name])
+    if m then
+      m = (m + (tune[name] or 0)) % (24 * 60)
+      out[name] = string.format("%02d:%02d", math.floor(m / 60), m % 60)
+    end
+  end
+  return out
 end
 
 -- minutes-of-day -> clock text (for computed iqamah times)
@@ -301,9 +324,10 @@ function render()
     kids[#kids + 1] = ui.column({ gap = 2, paddingV = 6, align = "center" }, card)
 
     -- countdown: next adhan — or iqamah while inside the adhan→iqamah window
+    local T = tuneTimings(d.timings, c.tune)
     local nowMin = nowMinutes()
-    local name, mins = nextPrayer(d.timings, nowMin)
-    local iqName, iqMins = iqamahWindow(d.timings, nowMin, c.iq)
+    local name, mins = nextPrayer(T, nowMin)
+    local iqName, iqMins = iqamahWindow(T, nowMin, c.iq)
     kids[#kids + 1] = ui.row({ gap = 6, align = "center", justify = "center", paddingV = 4 }, {
       ui.glyph({ name = "clock", size = 15, color = "primary" }),
       ui.label({
@@ -321,10 +345,10 @@ function render()
       local isHl = (rowName == hlName)
       local color = isHl and "primary" or (rowName == "Sunrise" and "on_surface_variant" or "on_surface")
       local right = {
-        ui.label({ text = fmtTime(d.timings[rowName], c.h12), fontSize = 13, color = color, fontWeight = isHl and "bold" or nil }),
+        ui.label({ text = fmtTime(T[rowName], c.h12), fontSize = 13, color = color, fontWeight = isHl and "bold" or nil }),
       }
       local off = c.iq[rowName] or 0
-      local adhanMin = toMin(d.timings[rowName])
+      local adhanMin = toMin(T[rowName])
       if off > 0 and adhanMin then
         table.insert(right, 1, ui.label({
           text = "iq " .. fmtMinutes(adhanMin + off, c.h12),

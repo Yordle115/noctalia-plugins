@@ -13,7 +13,7 @@ tags         = ["music", "youtube", "yt-dlp", "mpv"]
 [[plugin]]
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.3.0"
+version      = "0.3.1"
 author       = "yordle"
 license      = "MIT"
 icon         = "photo"
@@ -25,11 +25,11 @@ tags         = ["wallpaper", "wallpaper-engine", "hyprland", "steam-workshop"]
 [[plugin]]
 id           = "yordle/prayer-times"
 name         = "Prayer Times"
-version      = "0.3.0"
+version      = "0.4.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "building-mosque"
-description  = "Next-prayer countdown on the bar that switches to an iqamah countdown at adhan, with notifications for both; the panel shows the Hijri date and the day's prayer table with iqamah times. Defaults to Doha, Qatar (AlAdhan API, cached daily)."
+description  = "Next-prayer countdown on the bar that switches to an iqamah countdown at adhan, with notifications for both and per-prayer adhan offset tuning; the panel shows the Hijri date and the day's prayer table with iqamah times. Defaults to Doha, Qatar (AlAdhan API, cached daily)."
 deprecated   = false
 min_noctalia = "5.0.0"
 tags         = ["prayer", "islam", "adhan", "hijri", "qatar"]
