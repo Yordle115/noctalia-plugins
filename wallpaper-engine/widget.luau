@@ -19,11 +19,12 @@
 --    per-monitor — one process per monitor, fully independent pause.
 --
 --  Pause modes (plugin setting "pause_mode"):
---    windows    — a monitor triggers while ANY window is open on its active
---                 workspace (default; covers "paused when focused on a window"
---                 and stays paused while the wallpaper is covered)
---    focus      — a monitor triggers while it holds the focused window
 --    fullscreen — a monitor triggers while its workspace has a fullscreen app
+--                 (default: with transparent/blurred windows the wallpaper
+--                 stays visible, so keep it animating until truly hidden)
+--    windows    — a monitor triggers while ANY window is open on its active
+--                 workspace (max GPU savings; wallpaper freezes while working)
+--    focus      — a monitor triggers while it holds the focused window
 --    never      — no auto-pause
 -- =============================================================================
 
@@ -51,7 +52,7 @@ local function cfg()
     volume    = tonumber(getCfg("volume")) or 50,
     scaling   = tostring(getCfg("scaling") or "default"),
     extra     = noctalia.string.trim(tostring(getCfg("extra_args") or "")),
-    pauseMode = tostring(getCfg("pause_mode") or "windows"),
+    pauseMode = tostring(getCfg("pause_mode") or "fullscreen"),
     procMode  = tostring(getCfg("process_mode") or "single"),
     restore   = getCfg("autorestore") ~= false,
   }
@@ -138,7 +139,7 @@ local function decidePaused(mode, mons, wss, aw)
         paused[m.name] = (ws ~= nil) and (ws.hasfullscreen == true)
       elseif mode == "never" then
         paused[m.name] = false
-      else -- "windows" (default)
+      else -- "windows"
         paused[m.name] = ((ws and tonumber(ws.windows)) or 0) > 0
       end
     end

@@ -1,11 +1,11 @@
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.2.0"
+version      = "0.2.1"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
 icon         = "photo"
-description  = "Frontend for linux-wallpaperengine: browse Steam Workshop wallpapers with previews, assign per monitor (one process drives all monitors), and auto-pause when windows are open (SIGSTOP — near-zero CPU/GPU). Restores wallpapers on login."
+description  = "Frontend for linux-wallpaperengine: browse Steam Workshop wallpapers with previews, assign per monitor (one process drives all monitors), and auto-pause via SIGSTOP (near-zero CPU/GPU) — on fullscreen by default, or when windows are open/focused. Restores wallpapers on login."
 tags         = ["wallpaper", "wallpaper-engine", "hyprland", "steam-workshop"]
 
 # ---------------------------------------------------------------------------
@@ -22,8 +22,8 @@ default = "~/.local/share/Steam/steamapps/workshop/content/431960"
 key     = "pause_mode"
 type    = "string"
 label   = "Auto-pause mode"
-description = "windows = pause a monitor's wallpaper while any window is open on its active workspace (default); focus = only while the focused window is on that monitor; fullscreen = only when fullscreen; never = don't auto-pause."
-default = "windows"
+description = "fullscreen = pause only when a workspace has a fullscreen window (default — right choice with transparent/blurred windows where the wallpaper stays visible); windows = pause while any window is open on the monitor's workspace; focus = pause while the focused window is on that monitor; never = don't auto-pause."
+default = "fullscreen"
 
 [[setting]]
 key     = "process_mode"

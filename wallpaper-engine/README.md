@@ -7,9 +7,11 @@ CLI doesn't give you:
 - **Per-monitor selection** — browse your subscribed Workshop wallpapers with
   previews and assign each monitor its own wallpaper (or all at once). One
   process drives all monitors by default.
-- **Auto-pause** — wallpapers are **paused whenever windows are open**
-  (SIGSTOP: the process stops rendering and drops to ~zero CPU/GPU), and
-  resume the moment a workspace is empty again.
+- **Auto-pause** — wallpapers are paused via SIGSTOP (the process stops
+  rendering and drops to ~zero CPU/GPU) **when a fullscreen app is running**
+  by default — with transparent/blurred windows the wallpaper stays visible,
+  so it keeps animating until it's truly hidden. Prefer maximum GPU savings
+  instead? Switch the pause mode to `windows` or `focus` in settings.
 
 Plus: manual pause/resume, restore-on-login, FPS limit, audio mute/volume,
 scaling mode, and a raw `extra_args` passthrough.
@@ -44,10 +46,15 @@ it drives:
 
 | mode | a monitor triggers when… | single process pauses when… |
 |---|---|---|
-| `windows` (default) | **any** window is open on its active workspace | **every** monitor triggers (the wallpaper is visible nowhere) |
+| `fullscreen` (default) | its active workspace has a fullscreen window | **any** monitor triggers |
+| `windows` | **any** window is open on its active workspace | **every** monitor triggers (the wallpaper is visible nowhere) |
 | `focus` | it holds the currently focused window | **any** monitor triggers |
-| `fullscreen` | its active workspace has a fullscreen window | **any** monitor triggers |
 | `never` | never | never |
+
+`fullscreen` is the default because with window transparency/blur (and bar
+gaps) the wallpaper stays partially visible while you work — pausing it there
+would just show a frozen frame. `windows`/`focus` trade that visibility for
+maximum GPU/battery savings.
 
 In `per-monitor` process mode each monitor's process follows its own trigger
 directly.
@@ -83,7 +90,7 @@ hl.bind("SUPER + W", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/wallpaper
 ## Settings (Settings → Plugins → gear)
 
 - **Workshop content directory** — where Steam puts app 431960 items.
-- **Auto-pause mode** — `windows` / `focus` / `fullscreen` / `never`.
+- **Auto-pause mode** — `fullscreen` (default) / `windows` / `focus` / `never`.
 - **FPS limit** (default 30), **mute audio** (default on), **volume**.
 - **Scaling mode** — `default`, `stretch`, `fit`, `fill`.
 - **Restore on login/crash** — the widget respawns saved wallpapers.
