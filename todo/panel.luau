@@ -1,5 +1,5 @@
 -- =============================================================================
---  panel.luau — To-Do  v0.1.0
+--  panel.luau — To-Do  v0.1.1
 --  Simple persistent to-do list. Storage: ~/.config/noctalia-todo/todos.json
 --  (shared with the bar widget and the /todo launcher provider).
 --
@@ -28,10 +28,11 @@ local TAB_ACTIVE = "active"
 local TAB_DONE   = "done"
 
 local state = {
-  tab    = TAB_ACTIVE,
-  todos  = {},   -- { {id, text, done, pinned, created} } in insertion order
-  rows   = {},   -- todo ids in currently-rendered row order (rowAct target)
-  status = "",
+  tab      = TAB_ACTIVE,
+  todos    = {},   -- { {id, text, done, pinned, created} } in insertion order
+  rows     = {},   -- todo ids in currently-rendered row order (rowAct target)
+  status   = "",
+  inputGen = 1,    -- bumped after each add: a new input key = a cleared field
 }
 
 -- forward declaration (helpers below close over it)
@@ -84,6 +85,7 @@ local function addTodo(text)
   saveData()
   state.tab = TAB_ACTIVE
   state.status = "Added"
+  state.inputGen = state.inputGen + 1
   render()
 end
 
@@ -191,7 +193,7 @@ function render()
       ui.button({ glyph = "x", variant = "ghost", onClick = "onClose" }),
     }),
     ui.row({ gap = 8, align = "center" }, {
-      ui.input({ key = "new-task", placeholder = "Add a task…", flexGrow = 1, fontSize = 14, onSubmit = "onAdd" }),
+      ui.input({ key = "new-task-" .. state.inputGen, placeholder = "Add a task…", flexGrow = 1, fontSize = 14, onSubmit = "onAdd" }),
     }),
   }
   local body = (state.tab == TAB_DONE) and doneView() or activeView()

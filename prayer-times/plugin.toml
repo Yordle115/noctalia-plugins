@@ -1,6 +1,6 @@
 id           = "yordle/prayer-times"
 name         = "Prayer Times"
-version      = "0.1.0"
+version      = "0.2.0"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
@@ -33,6 +33,20 @@ description = "10 = Qatar. Others: 4 = Umm Al-Qura, 3 = Muslim World League, 8 =
 default = 10
 min     = 0
 max     = 23
+
+[[setting]]
+key     = "latitude"
+type    = "string"
+label   = "Latitude (fallback)"
+description = "Used with the coordinates endpoint when the city lookup fails. Default: Doha."
+default = "25.2854"
+
+[[setting]]
+key     = "longitude"
+type    = "string"
+label   = "Longitude (fallback)"
+description = "Used with the coordinates endpoint when the city lookup fails. Default: Doha."
+default = "51.5310"
 
 [[setting]]
 key     = "twelve_hour"

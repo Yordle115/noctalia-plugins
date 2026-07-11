@@ -53,6 +53,23 @@ hl.bind("SUPER + P", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/prayer-ti
 
 ---
 
+## Troubleshooting
+
+The panel status line reports the exact failure — an HTTP code from the API,
+or the curl network error. The fetch tries the city endpoint first, then falls
+back to coordinates (settings: latitude/longitude), then to the last cached
+day if both fail ("Offline — cached times from …").
+
+Mirror what the plugin runs to test by hand:
+
+```fish
+curl -sS -L -A noctalia "https://api.aladhan.com/v1/timingsByCity?city=Doha&country=Qatar&method=10" | head -c 300
+```
+
+If that works in a terminal but the plugin still reports a network error,
+Noctalia's script context may have a restricted PATH or environment — check
+`~/.cache/noctalia/noctalia.log`.
+
 ## Known rough edges (alpha API)
 
 - After Isha the countdown targets **today's** Fajr time as an approximation

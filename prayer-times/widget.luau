@@ -30,6 +30,8 @@ local function cfg()
     country = tostring(getCfg("country") or "Qatar"),
     method  = tonumber(getCfg("method")) or 10,
     h12     = getCfg("twelve_hour") ~= false,
+    lat     = tostring(getCfg("latitude") or "25.2854"),
+    lon     = tostring(getCfg("longitude") or "51.5310"),
   }
 end
 
@@ -108,32 +110,70 @@ local function saveCache(data)
   noctalia.runAsync("mkdir -p " .. sq(DATA_DIR) .. "; printf '%s' " .. sq(json) .. " > " .. sq(CACHE_FILE), nil)
 end
 
+-- Same fetch strategy as the panel: real UA + redirects, coordinates
+-- endpoint as fallback, and stale cache rather than nothing when offline.
+local UA = "noctalia-prayer-times (github.com/Yordle115/noctalia-plugins)"
+
+local function fetchCmd(url)
+  return "curl -sS -L --max-time 15 -A " .. sq(UA)
+    .. " -w '\\n@@HTTP:%{http_code}' " .. sq(url) .. " 2>&1"
+end
+
+local function stripHttp(out)
+  local body = tostring(out or ""):match("^(.-)\n?@@HTTP:%d+%s*$")
+  return body or tostring(out or "")
+end
+
+local function apiUrls()
+  local c = cfg()
+  local city = (c.city:gsub(" ", "%%20"))
+  local country = (c.country:gsub(" ", "%%20"))
+  return {
+    "https://api.aladhan.com/v1/timingsByCity?city=" .. city
+      .. "&country=" .. country .. "&method=" .. tostring(c.method),
+    "https://api.aladhan.com/v1/timings?latitude=" .. c.lat
+      .. "&longitude=" .. c.lon .. "&method=" .. tostring(c.method),
+  }
+end
+
 local function ensureData(cb)
   local today = noctalia.formatTime("%Y-%m-%d")
   if cached and cached.date == today then cb(cached); return end
   -- disk cache first (the panel may have fetched already)
   noctalia.runAsync("cat " .. sq(CACHE_FILE) .. " 2>/dev/null", function(res)
     local ok, disk = pcall(function() return noctalia.json.decode(res.stdout or "") end)
-    if ok and type(disk) == "table" and disk.date == today and type(disk.timings) == "table" then
+    local diskOk = ok and type(disk) == "table" and type(disk.timings) == "table"
+    if diskOk and disk.date == today then
       cached = disk
       cb(cached)
       return
     end
-    if fetching or not noctalia.commandExists("curl") then cb(nil); return end
+    if fetching or not noctalia.commandExists("curl") then
+      cb(diskOk and disk or cached)   -- stale beats nothing
+      return
+    end
     fetching = true
-    local c = cfg()
-    local city = (c.city:gsub(" ", "%%20"))
-    local country = (c.country:gsub(" ", "%%20"))
-    local url = "https://api.aladhan.com/v1/timingsByCity?city=" .. city
-      .. "&country=" .. country .. "&method=" .. tostring(c.method)
-    noctalia.runAsync("curl -s --max-time 10 " .. sq(url), function(r2)
-      fetching = false
-      local data = parseApi(r2.stdout)
+    local urls = apiUrls()
+    noctalia.runAsync(fetchCmd(urls[1]), function(r1)
+      local data = parseApi(stripHttp(r1.stdout))
       if data then
+        fetching = false
         cached = data
         saveCache(data)
+        cb(data)
+        return
       end
-      cb(data)
+      noctalia.runAsync(fetchCmd(urls[2]), function(r2)
+        fetching = false
+        local d2 = parseApi(stripHttp(r2.stdout))
+        if d2 then
+          cached = d2
+          saveCache(d2)
+          cb(d2)
+          return
+        end
+        cb(diskOk and disk or cached)   -- stale beats nothing
+      end)
     end)
   end)
 end
@@ -170,6 +210,9 @@ function update()
 
     local h = data.hijri
     local lines = {}
+    if data.date ~= noctalia.formatTime("%Y-%m-%d") then
+      lines[#lines + 1] = "⚠ offline — cached from " .. tostring(data.date or "?")
+    end
     if h.day ~= "" and h.month ~= "" then
       lines[#lines + 1] = h.day .. " " .. h.month .. " " .. h.year .. " AH"
     end
