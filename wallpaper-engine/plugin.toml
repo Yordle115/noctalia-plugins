@@ -1,6 +1,6 @@
 id           = "yordle/wallpaper-engine"
 name         = "Wallpaper Engine"
-version      = "0.3.1"
+version      = "0.3.2"
 min_noctalia = "5.0.0"
 author       = "yordle"
 license      = "MIT"
@@ -19,6 +19,13 @@ type    = "string"
 label   = "Workshop content directory"
 description = "Where Steam puts Wallpaper Engine workshop items (app 431960)."
 default = "~/.local/share/Steam/steamapps/workshop/content/431960"
+
+[[setting]]
+key     = "assets_dir"
+type    = "string"
+label   = "Wallpaper Engine assets directory"
+description = "The 'assets' folder from the Wallpaper Engine STEAM APP (steamapps/common/wallpaper_engine/assets) — required by linux-wallpaperengine, and NOT bundled by distro/nix packages. Empty = auto-detect from the workshop dir and standard Steam paths."
+default = ""
 
 [[setting]]
 key     = "pause_mode"

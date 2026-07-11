@@ -67,11 +67,19 @@ directly.
 ## Requirements
 
 - **linux-wallpaperengine** on `PATH` — on NixOS: `pkgs.linux-wallpaperengine`
-- **Steam + Wallpaper Engine** Workshop content (subscribe to wallpapers in
-  Steam; they land in `~/.local/share/Steam/steamapps/workshop/content/431960` —
-  configurable in settings)
+- **The Wallpaper Engine app installed in Steam** — linux-wallpaperengine
+  needs the app's proprietary `assets` folder
+  (`steamapps/common/wallpaper_engine/assets`); distro/nix packages do NOT
+  bundle it, and without it the engine exits immediately with
+  `Cannot find a valid assets folder`. The plugin auto-detects it (or set
+  the path in settings) and passes `--assets-dir`.
+- **Workshop content** — subscribe to wallpapers in Steam; they land in
+  `~/.local/share/Steam/steamapps/workshop/content/431960` (configurable)
 - **Hyprland** (`hyprctl`) for monitor enumeration and auto-pause
 - `pgrep`/`pkill` (procps — present on any normal system)
+
+> Also disable Noctalia's own wallpaper (it draws a `noctalia-wallpaper`
+> background layer that can cover or fight the engine's layer).
 
 ## Install (as a source)
 
@@ -103,6 +111,11 @@ hl.bind("SUPER + W", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/wallpaper
 
 ## Troubleshooting
 
+- `Cannot find a valid assets folder` / wallpapers never appear: the
+  Wallpaper Engine app's `assets` folder is missing — install the Wallpaper
+  Engine app in Steam (you own it if you have Workshop subscriptions), then
+  hit the panel's refresh button to re-probe. Or point the "assets
+  directory" setting at the folder manually.
 - Engine output is captured to `~/.config/noctalia-wpe/wpe.log` (fresh per
   apply/restart). If a wallpaper doesn't come up, the panel status shows the
   engine's last log line ("Engine exited — …"); the full log has the rest.

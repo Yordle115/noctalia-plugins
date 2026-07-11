@@ -54,6 +54,10 @@ local ov = {}
 -- state.json "engine"; default to modern syntax until told otherwise)
 local engBg = true
 
+-- Wallpaper Engine assets dir (probed by the panel, persisted alongside);
+-- without it the engine can't render, so respawns pass it through too
+local assets = ""
+
 local function ovBool(key, fallback)
   local v = ov[key]
   if type(v) == "boolean" then return v end
@@ -90,6 +94,9 @@ local function commonFlags()
   end
   if c.scaling ~= "" and c.scaling ~= "default" then
     f = f .. " --scaling " .. sq(c.scaling)
+  end
+  if assets ~= "" then
+    f = f .. " --assets-dir " .. sq(assets)
   end
   if c.extra ~= "" then f = f .. " " .. c.extra end
   return f
@@ -302,6 +309,7 @@ function update()
     ov = type(st.settings) == "table" and st.settings or {}
     local eng = type(st.engine) == "table" and st.engine or {}
     engBg = (eng.bg ~= false)
+    assets = tostring(eng.assets or "")
     local c = cfg()
 
     -- 2) what's actually running
