@@ -1,0 +1,45 @@
+id           = "yordle/todo"
+name         = "To-Do"
+version      = "0.1.0"
+min_noctalia = "5.0.0"
+author       = "yordle"
+license      = "MIT"
+icon         = "checklist"
+description  = "Simple persistent to-do list: panel with Active/Done tabs, pinning, a bar widget with the open-task count, and a /todo launcher command to add or complete tasks."
+tags         = ["todo", "tasks", "productivity"]
+
+# ---------------------------------------------------------------------------
+# The GUI panel
+# ---------------------------------------------------------------------------
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 420
+height    = 560
+placement = "floating"
+position  = "center"
+open_near_click = true
+
+# ---------------------------------------------------------------------------
+# Bar widget
+# ---------------------------------------------------------------------------
+[[widget]]
+id    = "bar"
+entry = "widget.luau"
+
+  [[widget.setting]]
+  key     = "show_count"
+  type    = "bool"
+  label   = "Show open-task count on bar"
+  default = true
+
+# ---------------------------------------------------------------------------
+# Launcher provider — /todo quick add / complete
+# ---------------------------------------------------------------------------
+[[launcher_provider]]
+id          = "search"
+entry       = "search.luau"
+prefix      = "/todo"
+glyph       = "checklist"
+debounce_ms = 200
+include_in_global_search = false
