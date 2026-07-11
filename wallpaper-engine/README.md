@@ -5,11 +5,11 @@ A frontend for [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaper
 CLI doesn't give you:
 
 - **Per-monitor selection** — browse your subscribed Workshop wallpapers with
-  previews and assign each monitor its own wallpaper (or all at once).
+  previews and assign each monitor its own wallpaper (or all at once). One
+  process drives all monitors by default.
 - **Auto-pause** — wallpapers are **paused whenever windows are open**
   (SIGSTOP: the process stops rendering and drops to ~zero CPU/GPU), and
-  resume the moment the workspace is empty again. Per monitor: a video call
-  on one screen pauses that screen's wallpaper only.
+  resume the moment a workspace is empty again.
 
 Plus: manual pause/resume, restore-on-login, FPS limit, audio mute/volume,
 scaling mode, and a raw `extra_args` passthrough.
@@ -21,27 +21,36 @@ scaling mode, and a raw `extra_args` passthrough.
 
 ## How it works
 
-- One `linux-wallpaperengine` process **per monitor** (that's what makes
-  per-monitor pause possible), launched as
-  `linux-wallpaperengine --screen-root <MON> --bg <ID> --fps N …`.
+- **One `linux-wallpaperengine` process drives all monitors** (default):
+  `linux-wallpaperengine --screen-root DP-1 --bg <ID> --screen-root HDMI-A-1
+  --bg <ID> --fps N …` — lighter on RAM/VRAM than one process per monitor.
+  Because pausing a single process is all-or-nothing, the pause decision is
+  aggregated (table below). Set `process_mode = per-monitor` in settings for
+  one process per monitor with fully independent pause.
 - The **panel** browses the Workshop directory (each item's `project.json`
-  supplies the title + preview image), and spawns/kills processes when you
+  supplies the title + preview image), and relaunches the process when you
   assign wallpapers. Desired state persists in
   `~/.config/noctalia-wpe/state.json`.
 - The **bar widget is the supervisor** — every second it checks Hyprland
   state (`hyprctl monitors/workspaces/activewindow -j`) and sends
-  `SIGSTOP`/`SIGCONT` to each wallpaper process, enforces the manual pause
-  flag, and respawns saved wallpapers whose process died (login, crash).
+  `SIGSTOP`/`SIGCONT`, enforces the manual pause flag, and respawns saved
+  wallpapers whose process died (login, crash).
   **Add the widget to your bar or auto-pause and restore will not run.**
 
 ### Pause modes (Settings → Plugins)
 
-| mode | behaviour |
-|---|---|
-| `windows` (default) | pause a monitor's wallpaper while **any** window is open on its active workspace — covers "pause when focused on a window" and stays paused while the wallpaper is covered |
-| `focus` | pause only the monitor holding the currently focused window |
-| `fullscreen` | pause only when the active workspace has a fullscreen window |
-| `never` | no auto-pause |
+Each monitor "triggers" per the mode; a process pauses based on the monitors
+it drives:
+
+| mode | a monitor triggers when… | single process pauses when… |
+|---|---|---|
+| `windows` (default) | **any** window is open on its active workspace | **every** monitor triggers (the wallpaper is visible nowhere) |
+| `focus` | it holds the currently focused window | **any** monitor triggers |
+| `fullscreen` | its active workspace has a fullscreen window | **any** monitor triggers |
+| `never` | never | never |
+
+In `per-monitor` process mode each monitor's process follows its own trigger
+directly.
 
 ---
 
@@ -90,5 +99,7 @@ hl.bind("SUPER + W", hl.dsp.exec_cmd("noctalia msg panel-toggle yordle/wallpaper
   so other compositors get neither the monitor chips nor auto-pause.
 - The wallpaper list caps at 60 clickable rows — use the filter box to narrow
   large collections.
-- If your linux-wallpaperengine build misbehaves with multiple instances,
-  per-monitor assignment may glitch — test with one monitor first.
+- In single-process mode, changing one monitor's wallpaper relaunches the
+  shared process, so other monitors' wallpapers restart briefly. Use
+  `per-monitor` mode if that bothers you (at the cost of one process per
+  monitor).

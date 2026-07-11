@@ -1,13 +1,16 @@
 -- =============================================================================
---  panel.luau — Wallpaper Engine  v0.1.0
+--  panel.luau — Wallpaper Engine  v0.2.0
 --  Frontend for linux-wallpaperengine: browse Steam Workshop wallpapers with
 --  previews, assign them per monitor (or all), pause/resume, stop.
 --
 --  Division of labour:
 --    PANEL (this file) — owns user actions. Writes the desired state to
 --      ~/.config/noctalia-wpe/state.json and (re)spawns/kills the
---      linux-wallpaperengine processes: ONE PROCESS PER MONITOR, so each
---      monitor's wallpaper can be paused independently via SIGSTOP/SIGCONT.
+--      linux-wallpaperengine process(es). Default: ONE process drives ALL
+--      monitors (--screen-root A --bg X --screen-root B --bg Y …), so pause
+--      via SIGSTOP is all-or-nothing (the widget aggregates per pause mode).
+--      Set process_mode = per-monitor for one process per monitor with fully
+--      independent pause.
 --    BAR WIDGET (widget.luau) — the supervisor. Auto-pauses wallpapers when
 --      windows are open (hyprctl), applies the manual pause flag, respawns
 --      dead wallpapers on login. WITHOUT THE WIDGET on a bar, auto-pause and
@@ -46,6 +49,7 @@ local function cfg()
     volume  = tonumber(getCfg("volume")) or 50,
     scaling = tostring(getCfg("scaling") or "default"),
     extra   = noctalia.string.trim(tostring(getCfg("extra_args") or "")),
+    procMode = tostring(getCfg("process_mode") or "single"),
   }
 end
 
@@ -142,22 +146,37 @@ local function scanWallpapers()
 end
 
 -- ---------- process control ----------
--- One linux-wallpaperengine process per monitor; the cmdline carries
--- "--screen-root <MON> --bg <ID>" so the widget can find and signal each one.
-local function launchCmd(mon, wpId)
+-- The cmdline always carries "--screen-root <MON> --bg <ID>" pairs so the
+-- widget can find each monitor's assignment and signal the process.
+local function commonFlags()
   local c = cfg()
-  local cmd = "setsid linux-wallpaperengine --screen-root " .. sq(mon) .. " --bg " .. sq(wpId)
-    .. " --fps " .. tostring(c.fps)
+  local f = " --fps " .. tostring(c.fps)
   if c.mute then
-    cmd = cmd .. " --silent"
+    f = f .. " --silent"
   else
-    cmd = cmd .. " --volume " .. tostring(c.volume)
+    f = f .. " --volume " .. tostring(c.volume)
   end
   if c.scaling ~= "" and c.scaling ~= "default" then
-    cmd = cmd .. " --scaling " .. sq(c.scaling)
+    f = f .. " --scaling " .. sq(c.scaling)
   end
-  if c.extra ~= "" then cmd = cmd .. " " .. c.extra end
-  return cmd .. " >/dev/null 2>&1 &"
+  if c.extra ~= "" then f = f .. " " .. c.extra end
+  return f
+end
+
+-- per-monitor mode: one process for one monitor
+local function launchCmd(mon, wpId)
+  return "setsid linux-wallpaperengine --screen-root " .. sq(mon) .. " --bg " .. sq(wpId)
+    .. commonFlags() .. " >/dev/null 2>&1 &"
+end
+
+-- single mode: one process carrying every assignment ({ {mon, id}, ... })
+local function singleLaunchCmd(list)
+  if #list == 0 then return "true" end
+  local cmd = "setsid linux-wallpaperengine"
+  for _, a in ipairs(list) do
+    cmd = cmd .. " --screen-root " .. sq(a.mon) .. " --bg " .. sq(a.id)
+  end
+  return cmd .. commonFlags() .. " >/dev/null 2>&1 &"
 end
 
 local function killPattern(mon)
@@ -175,16 +194,35 @@ local function applyWallpaper(wp, mons)
     render()
     return
   end
-  local kills, spawns = "", ""
+  local c = cfg()
   for _, mon in ipairs(mons) do
     state.assigned[mon] = { id = wp.id, title = wp.title }
-    kills = kills .. "pkill -f " .. sq(killPattern(mon)) .. " 2>/dev/null; "
-    spawns = spawns .. launchCmd(mon, wp.id) .. " "
   end
   saveState()
   state.status = "Applying " .. wp.title .. "…"
   render()
-  noctalia.runAsync(kills .. "sleep 0.3; " .. spawns, function()
+
+  local cmd
+  if c.procMode == "per-monitor" then
+    local kills, spawns = "", ""
+    for _, mon in ipairs(mons) do
+      kills = kills .. "pkill -f " .. sq(killPattern(mon)) .. " 2>/dev/null; "
+      spawns = spawns .. launchCmd(mon, wp.id) .. " "
+    end
+    cmd = kills .. "sleep 0.3; " .. spawns
+  else
+    -- single process: relaunch with every assignment on a currently-present
+    -- monitor (a stale name from an unplugged monitor would kill the launch)
+    local list = {}
+    for _, m in ipairs(state.monitors) do
+      local a = state.assigned[m.name]
+      if type(a) == "table" and a.id then
+        list[#list + 1] = { mon = m.name, id = tostring(a.id) }
+      end
+    end
+    cmd = "pkill -f linux-wallpaperengine 2>/dev/null; sleep 0.3; " .. singleLaunchCmd(list)
+  end
+  noctalia.runAsync(cmd, function()
     state.status = wp.title .. " → " .. table.concat(mons, ", ")
     render()
   end)
