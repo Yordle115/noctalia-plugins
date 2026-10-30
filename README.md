@@ -41,3 +41,18 @@ Simple persistent to-do list: panel with Active/Done tabs and pinning, bar
 widget with the open-task count, and a `/todo` launcher command to add or
 complete tasks. No external dependencies. See
 [`todo/README.md`](todo/README.md).
+
+### Discord Voice (local fork) — `raycursive/discord-voice`
+Fork of the community plugin [`raycursive/discord-voice`](https://github.com/noctalia-dev/community-plugins/tree/main/discord-voice)
+v0.3.3 (MIT): bar widget and panel for the Discord desktop client's voice
+session, plus `toggle-mute`, `toggle-deafen` and `toggle-screenshare` IPC
+events for compositor keybinds, and silent renewal of an expired Discord token.
+It keeps the upstream id, so this source replaces the community copy.
+**Requires** `python3` and the Discord desktop client. See
+[`discord-voice/README.md`](discord-voice/README.md).
+
+```fish
+noctalia msg plugin raycursive/discord-voice:bridge all toggle-mute
+noctalia msg plugin raycursive/discord-voice:bridge all toggle-deafen
+noctalia msg plugin raycursive/discord-voice:bridge all toggle-screenshare
+```

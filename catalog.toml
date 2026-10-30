@@ -45,3 +45,17 @@ description  = "Simple persistent to-do list: panel with Active/Done tabs, pinni
 deprecated   = false
 min_noctalia = "5.0.0"
 tags         = ["todo", "tasks", "productivity"]
+
+# Local fork of the community plugin; keeps the upstream id so it replaces it.
+[[plugin]]
+id           = "raycursive/discord-voice"
+name         = "Discord Voice"
+version      = "0.3.4"
+plugin_api   = 43
+author       = "raycursive"
+license      = "MIT"
+icon         = "brand-discord"
+description  = "Monitor and control local Discord voice sessions, including participants, volume, speaking, and latency. Local fork: keybind toggles for mute, deafen and screen share."
+deprecated   = false
+dependencies = ["discord", "python3"]
+tags         = ["audio", "bar", "network", "panel", "privacy", "service"]
